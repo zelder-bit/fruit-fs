@@ -1,1 +1,94 @@
-<!doctype html><title>fruit-fs</title>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>fruit-fs</title>
+  <link rel="icon" href="svg/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="fruit.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <div id="login" class="screen" hidden>
+    <form class="login-card">
+      <img src="svg/logo.svg" alt="" class="login-logo">
+      <h1>fruit-fs</h1>
+      <p class="muted">Fresh files, picked from home.</p>
+      <label class="field">
+        <span>Password</span>
+        <input type="password" name="password" autocomplete="current-password" required autofocus>
+      </label>
+      <p class="error" hidden></p>
+      <button class="btn primary" type="submit">Open the crate</button>
+      <p class="muted small">On Tailscale? You'll be let in automatically.</p>
+    </form>
+  </div>
+
+  <div id="app" hidden>
+    <header class="top">
+      <a class="brand" href="#/files/">
+        <img src="svg/logo.svg" alt="">
+        <span>fruit-fs</span>
+      </a>
+      <nav class="tabs">
+        <a href="#/files/" data-tab="files">Files</a>
+        <a href="#/drop" data-tab="drop">Drop</a>
+        <a href="#/trash" data-tab="trash">Trash</a>
+      </nav>
+      <div class="top-right">
+        <button class="icon-btn" id="theme" title="Switch light / dark" aria-label="Switch light or dark theme"></button>
+        <button class="user-chip" id="user" title="Signed in"></button>
+      </div>
+    </header>
+
+    <main>
+      <section id="view-files" class="view" hidden>
+        <div class="toolbar">
+          <nav class="crumbs" aria-label="Folder path"></nav>
+          <div class="tools">
+            <input type="search" id="search" placeholder="Find a fruit…" aria-label="Search by name">
+            <button class="btn" id="new-folder">New crate</button>
+            <label class="btn primary">Upload<input type="file" id="pick-files" multiple hidden></label>
+            <label class="btn">Folder<input type="file" id="pick-folder" webkitdirectory hidden></label>
+            <button class="icon-btn" id="layout" title="Grid / list" aria-label="Switch grid or list"></button>
+          </div>
+        </div>
+        <div class="selection-bar" hidden>
+          <span class="count"></span>
+          <button class="btn" data-act="zip">Download zip</button>
+          <button class="btn" data-act="move">Move</button>
+          <button class="btn danger" data-act="delete">Delete</button>
+          <button class="btn ghost" data-act="clear">Clear</button>
+        </div>
+        <div id="listing" class="grid"></div>
+        <footer class="disk"><div class="disk-bar"><div></div></div><span></span></footer>
+      </section>
+
+      <section id="view-drop" class="view" hidden>
+        <div class="drop-hero">
+          <img src="svg/orange-slice.svg" alt="" class="drop-slice">
+          <h2>You are <span id="me-name">…</span></h2>
+          <p class="muted">Open fruit-fs on another device. Tap it below to send files, or hold for a note.</p>
+        </div>
+        <div id="peers" class="peers"></div>
+        <input type="file" id="drop-pick" multiple hidden>
+      </section>
+
+      <section id="view-trash" class="view" hidden>
+        <div class="toolbar">
+          <h2>Compost bin</h2>
+          <div class="tools"><button class="btn danger" id="empty-trash">Empty now</button></div>
+        </div>
+        <p class="muted">Deleted things wait here for 30 days, then they're gone for good.</p>
+        <div id="trash-list" class="list"></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="dropzone" hidden><div><img src="svg/orange-slice.svg" alt=""><p>Drop to upload here</p></div></div>
+  <aside id="tray" hidden></aside>
+  <div id="toasts" aria-live="polite"></div>
+  <dialog id="modal"></dialog>
+</body>
+</html>

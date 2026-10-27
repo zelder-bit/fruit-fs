@@ -71,3 +71,27 @@ A different AI coding tool (OpenAI's Codex) read the server code with fresh eyes
 - **Smaller fixes:** signing out also requires the app's own header, and turning off password login now also cancels existing password sessions.
 
 New tests check each of these, for example 30 password guesses at once (at least 20 must be refused), cancelling an upload mid-way, and a receiver hanging up partway through a 64 MB drop.
+
+### 4. The web pages and the fruit look
+
+This commit is the "front end", what you actually see and click. It is written in plain JavaScript with no build tools or downloaded libraries: the browser runs the files exactly as written. That keeps the project small, and there is no pile of other people's code that could hide a problem.
+
+**How the pages are organised** (`web/static/`):
+
+- `index.html` is the skeleton: the sign-in card, the top bar with the Files / Drop / Trash tabs, and empty boxes the JavaScript fills in.
+- `js/app.js` starts everything. It asks the server "who am I?" and shows either the sign-in card or the app. It also switches tabs based on the part of the address after `#`, so the browser's Back button works and each folder has its own link.
+- `js/files.js` draws the file browser: cards in a grid (or rows in a list), the breadcrumb trail ("Home › Photos"), search, the ⋯ menu (preview, download, rename, move, delete), ticking several files to zip, move or delete them together, and the preview window (photos, videos, music, PDFs and text, with ‹ › arrows to flip through).
+- `js/upload.js` is the upload queue. It cuts each file into 8 MB pieces, sends two files at a time, shows progress, and if the connection drops it asks the server how much arrived and picks up from there. Dragging a whole folder onto the page keeps its sub-folders.
+- `js/drop.js` runs the Drop tab: it keeps a live connection open, shows the other devices as bubbles, lets you tap one to send files or long-press it to send a note, and pops up "Zesty Orange wants to share" with **Download**, **Save to fruit-fs** or **Decline**.
+- `js/ui.js` holds small shared helpers. The most important is `h()`, which builds every bit of the page. It always treats names as plain text, never as code, so a file named `<script>…` just shows up as those characters instead of running.
+
+**The fruit look** (`fruit.css` and `svg/`):
+
+- Colours are defined once as named variables (orange `#FF8A00`, banana `#FFE135`, leaf green, cream background) and reused everywhere. Dark mode, called "night grove", swaps those variables for a darker orchard palette. It follows your device's setting, and the ☾ button overrides it.
+- Every kind of file has a fruit: folders are fruit crates, photos strawberries, videos watermelon, music grapes, documents lemons, PDFs peaches, zips coconuts, code kiwis, and anything else an apple. Photos show a small preview instead.
+- Small touches: the upload bar is a banana sliding along, the drop target is a spinning orange slice, the trash is a "compost bin", and empty folders show an empty crate with a banana peel.
+- The fruit drawings were first drafted by Google's Gemini model, then checked by hand: no scripts, no outside links, and colours tied to the variables above.
+- The fonts (Fredoka for headings, Nunito for text) are stored inside the app instead of loaded from Google, so the page works with no internet and nobody else learns when you open it. Their open-source licences are included.
+- On phones the tabs move under the header, the buttons share one row, and previews fill the screen.
+
+**How it was checked:** a headless browser (a real Chrome with no window, driven by a script) signed in, opened folders, previewed a photo, uploaded a 20 MB file, deleted it and found it in Trash, switched to dark mode, sent a file between two tabs through Drop, and loaded the page at phone width to make sure nothing spilled off the side of the screen.
