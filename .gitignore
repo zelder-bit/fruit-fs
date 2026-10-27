@@ -1,0 +1,6 @@
+# Local configuration and secrets never leave this machine
+.env
+*.local*
+data/
+/fruit-fs
+*.test
