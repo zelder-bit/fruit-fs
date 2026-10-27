@@ -5,7 +5,8 @@
 //     Tailscale-User-Login header set by Tailscale itself. Headers from anywhere else
 //     are ignored, so nobody on the LAN can claim to be a tailnet user.
 //   - On the LAN: a password login gives a guest a short, signed session cookie.
-//     When it expires the guest has to sign in again.
+//     When it expires the guest has to sign in again. Tailnet admins set how long
+//     guest sessions last, or turn guest sign-in off, from the admin page.
 package auth
 
 import (
@@ -33,9 +34,8 @@ import (
 )
 
 const (
-	cookieName  = "fruitfs_session"
-	guestLength = 10 * time.Minute
-	lanUser     = "lan"
+	cookieName = "fruitfs_session"
+	lanUser    = "lan"
 )
 
 type Identity struct {
@@ -44,6 +44,7 @@ type Identity struct {
 	Via       string     `json:"via"`                 // "tailscale" or "guest"
 	Pic       string     `json:"pic,omitempty"`       // Tailscale profile picture URL
 	ExpiresAt *time.Time `json:"expiresAt,omitempty"` // when a guest session ends
+	Admin     bool       `json:"admin,omitempty"`     // may change guest settings
 }
 
 func guestIdentity(expires time.Time) Identity {
@@ -64,17 +65,23 @@ func WithIdentity(ctx context.Context, id Identity) context.Context {
 }
 
 type Auth struct {
-	cfg     *config.Config
-	key     []byte
-	limiter *limiter
-	hashing chan struct{} // at most 2 password checks at once (each uses 64 MiB)
-	now     func() time.Time
+	cfg      *config.Config
+	settings *settingsStore
+	key      []byte
+	limiter  *limiter
+	hashing  chan struct{} // at most 2 password checks at once (each uses 64 MiB)
+	now      func() time.Time
 }
 
-// New loads (or creates) the session signing key in stateDir. Keep stateDir
-// outside the served data directory so no file API can ever reach the key.
+// New loads (or creates) the session signing key and loads the guest settings
+// in stateDir. Keep stateDir outside the served data directory so no file API
+// can ever reach them.
 func New(cfg *config.Config, stateDir string) (*Auth, error) {
 	raw, err := loadKey(filepath.Join(stateDir, "session.key"))
+	if err != nil {
+		return nil, err
+	}
+	settings, err := loadSettings(stateDir)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +89,7 @@ func New(cfg *config.Config, stateDir string) (*Auth, error) {
 	// everyone out.
 	m := hmac.New(sha256.New, raw)
 	m.Write([]byte("session:" + cfg.PasswordHash))
-	return &Auth{cfg: cfg, key: m.Sum(nil), limiter: newLimiter(10, 15*time.Minute),
+	return &Auth{cfg: cfg, settings: settings, key: m.Sum(nil), limiter: newLimiter(10, 15*time.Minute),
 		hashing: make(chan struct{}, 2), now: time.Now}, nil
 }
 
@@ -131,10 +138,13 @@ func (a *Auth) Identify(r *http.Request) (Identity, bool) {
 			if name == "" {
 				name = login
 			}
-			return Identity{User: login, Name: name, Via: "tailscale", Pic: r.Header.Get("Tailscale-User-Profile-Pic")}, true
+			id := Identity{User: login, Name: name, Via: "tailscale", Pic: r.Header.Get("Tailscale-User-Profile-Pic")}
+			id.Admin = a.IsAdmin(id)
+			return id, true
 		}
 	}
-	if c, err := r.Cookie(cookieName); err == nil && a.cfg.PasswordHash != "" {
+	// Turning guest sign-in off also ends the guest sessions already running.
+	if c, err := r.Cookie(cookieName); err == nil && a.guestSignIn() {
 		if exp, ok := a.sessionExpiry(c.Value); ok {
 			return guestIdentity(exp), true
 		}
@@ -242,6 +252,11 @@ func (a *Auth) secure(r *http.Request) bool {
 
 // --- handlers -------------------------------------------------------------
 
+// guestSignIn reports whether LAN password sign-in is possible right now.
+func (a *Auth) guestSignIn() bool {
+	return a.cfg.PasswordHash != "" && a.settings.get().GuestEnabled
+}
+
 // Login handles POST /api/login {"password": "..."}.
 func (a *Auth) Login(w http.ResponseWriter, r *http.Request) {
 	if !a.SameOrigin(r, true) {
@@ -250,6 +265,10 @@ func (a *Auth) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.cfg.PasswordHash == "" {
 		httpx.Error(w, http.StatusForbidden, "password sign-in is turned off")
+		return
+	}
+	if !a.settings.get().GuestEnabled {
+		httpx.Error(w, http.StatusForbidden, "guest sign-in is turned off")
 		return
 	}
 	ip := remoteIP(r).String()
@@ -276,7 +295,7 @@ func (a *Auth) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.limiter.reset(ip)
-	tok, exp := a.newSession(guestLength)
+	tok, exp := a.newSession(a.settings.get().GuestLength())
 	http.SetCookie(w, &http.Cookie{
 		Name: cookieName, Value: tok, Path: "/",
 		MaxAge: int(exp.Sub(a.now()).Seconds()), HttpOnly: true,
@@ -301,7 +320,7 @@ func (a *Auth) Me(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]any{"error": "sign in first", "password": a.cfg.PasswordHash != ""})
+		json.NewEncoder(w).Encode(map[string]any{"error": "sign in first", "password": a.guestSignIn()})
 		return
 	}
 	httpx.JSON(w, id)

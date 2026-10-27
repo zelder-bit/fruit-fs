@@ -29,3 +29,15 @@ func TestRefusesToRunWideOpen(t *testing.T) {
 		t.Fatal("accepted a plain-text password")
 	}
 }
+
+func TestAdmins(t *testing.T) {
+	t.Setenv("FRUITFS_TRUSTED_PROXIES", "192.0.2.10")
+	t.Setenv("FRUITFS_ADMINS", "Alice@Example.com, bob@example.com")
+	c, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Admins) != 2 || !c.Admins["alice@example.com"] {
+		t.Fatalf("admins: %v", c.Admins)
+	}
+}

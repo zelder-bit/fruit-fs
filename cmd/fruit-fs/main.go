@@ -81,6 +81,7 @@ func serve() error {
 	mux.HandleFunc("GET /api/me", a.Me)
 	mux.HandleFunc("POST /api/login", a.Login)
 	mux.HandleFunc("POST /api/logout", a.Logout)
+	a.RegisterAdmin(mux)
 	fsvc.Register(mux, a.Middleware)
 	usvc.Register(mux, a.Middleware)
 	hub.Register(mux, a.Middleware)

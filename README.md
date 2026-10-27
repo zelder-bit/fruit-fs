@@ -4,7 +4,7 @@ A small, fruity, self-hosted file browser and device-to-device drop. One Go bina
 
 - **Files:** browse, upload (resumable, folders too), download, zip whole folders, rename, move, search, preview photos, video, audio, PDFs and text, and a 30-day trash.
 - **Drop:** open fruit-fs on two devices and send files or notes between them, AirDrop style. Files stream straight through and are never stored, unless the receiver picks "save to fruit-fs".
-- **Two ways in:** behind [Tailscale Serve](https://tailscale.com/kb/1312/serve) you're signed in automatically from your tailnet identity; on the local network you sign in with a password.
+- **Two ways in:** behind [Tailscale Serve](https://tailscale.com/kb/1312/serve) you're signed in automatically from your tailnet identity; on the local network you sign in with a password as a **guest**, and the guest session ends after 10 minutes (adjustable on the Admin page).
 
 New to all this? [docs/walkthrough.md](docs/walkthrough.md) explains how it works in plain English, commit by commit.
 
@@ -27,14 +27,24 @@ docker run --rm -i ghcr.io/zelder-bit/fruit-fs hash-password
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `FRUITFS_DATA` | `/data` | Folder that is served |
-| `FRUITFS_STATE` | `/state` | Private state (session key). Must not be inside `FRUITFS_DATA` |
+| `FRUITFS_STATE` | `/state` | Private state (session key, guest settings). Must not be inside `FRUITFS_DATA` |
 | `FRUITFS_LISTEN` | `:8080` | Listen address |
 | `FRUITFS_TRUSTED_PROXIES` | | Addresses or CIDRs allowed to vouch for a user with `Tailscale-User-Login` (where `tailscale serve` runs) |
 | `FRUITFS_ALLOWED_USERS` | | Optional comma-separated tailnet logins; empty allows the whole tailnet |
-| `FRUITFS_PASSWORD_HASH` | | argon2id hash for LAN sign-in; empty turns password sign-in off |
+| `FRUITFS_ADMINS` | | Optional comma-separated tailnet logins who may open the Admin page; empty allows every tailnet user. Guests never can |
+| `FRUITFS_PASSWORD_HASH` | | argon2id hash for LAN (guest) sign-in; empty turns password sign-in off |
 | `FRUITFS_MAX_UPLOAD` | | Largest file, e.g. `20G`; empty means no limit |
 
 At least one of `FRUITFS_TRUSTED_PROXIES` or `FRUITFS_PASSWORD_HASH` must be set.
+
+### Guest settings (Admin page)
+
+Tailnet admins change these in the app under **Admin**; they are saved in `FRUITFS_STATE/settings.json` and survive restarts.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| Allow guest sign-in | on | Off refuses LAN password sign-in and ends running guest sessions |
+| Guest session length | 10 min | 5 minutes to 24 hours. Applies to guests who sign in after the change |
 
 ### Behind Tailscale Serve
 
@@ -49,7 +59,8 @@ Set `FRUITFS_TRUSTED_PROXIES` to the address fruit-fs sees those requests come f
 - Every file operation goes through Go's `os.Root`, so paths and symlinks can't leave the data folder.
 - State-changing requests need an `X-Fruit: 1` header plus a matching `Origin`, and cookies are `SameSite=Strict`.
 - Uploaded files are only ever shown inline as images, video, audio, PDF or plain text, with a sandbox CSP; anything else downloads.
-- Password sign-in uses argon2id, a per-address attempt limit, and at most two hash checks at once.
+- Password sign-in uses argon2id, a per-address attempt limit, and at most two hash checks at once. It gives a guest session whose expiry is signed into the cookie, so it can't be stretched.
+- The Admin page and `/api/admin/*` are tailnet-only; guests get `403`.
 - On a plain-HTTP LAN the password travels unencrypted; use the Tailscale address when you can.
 - Deleted files and unfinished uploads live in `.fruit-fs/` inside the data folder (hidden from the app).
 

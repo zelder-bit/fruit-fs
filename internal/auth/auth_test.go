@@ -106,7 +106,7 @@ func TestPasswordLoginAndSession(t *testing.T) {
 	if _, ok := a.Identify(r); ok {
 		t.Fatal("tampered session accepted")
 	}
-	a.now = func() time.Time { return time.Now().Add(guestLength + time.Minute) }
+	a.now = func() time.Time { return time.Now().Add(DefaultGuestLength + time.Minute) }
 	r = req("GET", lanAddr, nil)
 	r.AddCookie(cookie)
 	if _, ok := a.Identify(r); ok {
