@@ -1,5 +1,5 @@
 // Entry point: sign-in, theme, routing between the Files, Drop and Trash views.
-import { h, $, api, toast, fmtSize, fmtDate, fruitFor, icon, ask } from './ui.js';
+import { h, $, api, toast, fmtSize, fmtDate, fruitFor, icon, ask, markGuestEnded, takeGuestEnded } from './ui.js';
 import { initFiles, showFiles } from './files.js';
 import { initDrop } from './drop.js';
 
@@ -45,9 +45,15 @@ function showLogin() {
   $('#login').hidden = false;
   const form = $('#login form');
   const err = form.querySelector('.error');
+  const notice = form.querySelector('.notice');
+  if (takeGuestEnded()) {
+    notice.textContent = 'Your guest session ended. Sign in again to keep going.';
+    notice.hidden = false;
+  }
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     err.hidden = true;
+    notice.hidden = true;
     try {
       identity = await api('POST', '/api/login', { password: form.password.value });
       $('#login').hidden = true;
@@ -62,13 +68,15 @@ function showLogin() {
 
 function showApp() {
   $('#app').hidden = false;
+  document.documentElement.dataset.via = identity.via;
   const chip = $('#user');
   chip.replaceChildren(
     identity.pic ? h('img', { src: identity.pic, alt: '', referrerpolicy: 'no-referrer' }) : h('span', { class: 'avatar' }, (identity.name || '?')[0].toUpperCase()),
     h('span', { class: 'user-name' }, identity.name));
-  chip.title = identity.via === 'tailscale' ? `Signed in through Tailscale as ${identity.user}` : 'Signed in with the home password';
+  chip.title = identity.via === 'tailscale' ? `Signed in through Tailscale as ${identity.user}` : 'Signed in as a guest with the home password';
+  if (identity.via === 'guest') startGuestTimer(chip);
   chip.addEventListener('click', async () => {
-    if (identity.via !== 'password') { toast(chip.title); return; }
+    if (identity.via !== 'guest') { toast(chip.title); return; }
     if (await ask({ title: 'Sign out?', label: 'You will need the password to get back in.', ok: 'Sign out', input: false })) {
       await api('POST', '/api/logout');
       location.reload();
@@ -79,6 +87,32 @@ function showApp() {
   $('#empty-trash').addEventListener('click', emptyTrash);
   addEventListener('hashchange', route);
   route();
+}
+
+// --- guest countdown -------------------------------------------------------------
+
+// Guests see how long they have left; when the time is up they go back to the
+// sign-in screen. The server refuses the session at the same moment anyway.
+function startGuestTimer(chip) {
+  const ends = Date.parse(identity.expiresAt);
+  if (!ends) return;
+  const left = h('span', { class: 'guest-left' });
+  chip.append(left);
+  const tick = () => {
+    const ms = ends - Date.now();
+    if (ms <= 0) {
+      clearInterval(timer);
+      markGuestEnded();
+      location.reload();
+      return;
+    }
+    const min = Math.ceil(ms / 60000);
+    left.textContent = min > 90 ? `${Math.round(min / 60)} h left` : `${min} min left`;
+    left.classList.toggle('low', ms <= 2 * 60000);
+    chip.setAttribute('aria-label', `Guest, ${left.textContent}`);
+  };
+  const timer = setInterval(tick, 5000);
+  tick();
 }
 
 // --- routing -------------------------------------------------------------------

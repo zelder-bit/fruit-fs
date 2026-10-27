@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -95,7 +96,7 @@ func TestPasswordLoginAndSession(t *testing.T) {
 	}
 	r := req("GET", lanAddr, nil)
 	r.AddCookie(cookie)
-	if id, ok := a.Identify(r); !ok || id.Via != "password" {
+	if id, ok := a.Identify(r); !ok || id.Via != "guest" || id.ExpiresAt == nil {
 		t.Fatalf("session not accepted: %+v", id)
 	}
 
@@ -105,7 +106,7 @@ func TestPasswordLoginAndSession(t *testing.T) {
 	if _, ok := a.Identify(r); ok {
 		t.Fatal("tampered session accepted")
 	}
-	a.now = func() time.Time { return time.Now().Add(sessionLength + time.Hour) }
+	a.now = func() time.Time { return time.Now().Add(guestLength + time.Minute) }
 	r = req("GET", lanAddr, nil)
 	r.AddCookie(cookie)
 	if _, ok := a.Identify(r); ok {
@@ -198,5 +199,93 @@ func TestSessionsEndWhenPasswordChangesOrIsRemoved(t *testing.T) {
 	c, _ := New(&config.Config{TrustedProxies: cfg.TrustedProxies, AllowedUsers: map[string]bool{}}, dir)
 	if _, ok := c.Identify(r); ok {
 		t.Fatal("session accepted with password login turned off")
+	}
+}
+
+// guestSession signs in on the LAN at a fixed time and returns the cookie.
+func guestSession(t *testing.T, a *Auth, at time.Time) *http.Cookie {
+	t.Helper()
+	a.now = func() time.Time { return at }
+	w := login(a, "correct horse")
+	if w.Code != http.StatusOK {
+		t.Fatalf("login: %d %s", w.Code, w.Body)
+	}
+	return w.Result().Cookies()[0]
+}
+
+func identifyAt(a *Auth, at time.Time, c *http.Cookie) (Identity, bool) {
+	a.now = func() time.Time { return at }
+	r := req("GET", lanAddr, nil)
+	r.AddCookie(c)
+	return a.Identify(r)
+}
+
+func TestGuestSessionEndsAfterTenMinutes(t *testing.T) {
+	a := newAuth(t, nil)
+	start := time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC)
+	cookie := guestSession(t, a, start)
+
+	if cookie.MaxAge != 600 {
+		t.Errorf("cookie MaxAge = %d, want 600", cookie.MaxAge)
+	}
+	id, ok := identifyAt(a, start.Add(9*time.Minute+59*time.Second), cookie)
+	if !ok || id.Via != "guest" || id.User != lanUser {
+		t.Fatalf("guest refused before expiry: %+v %v", id, ok)
+	}
+	if want := start.Add(10 * time.Minute); id.ExpiresAt == nil || !id.ExpiresAt.Equal(want) {
+		t.Fatalf("ExpiresAt = %v, want %v", id.ExpiresAt, want)
+	}
+	if _, ok := identifyAt(a, start.Add(10*time.Minute), cookie); ok {
+		t.Fatal("guest still signed in at 10 minutes")
+	}
+
+	// The middleware turns the expired guest away too.
+	h := a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(299) }))
+	r := req("GET", lanAddr, nil)
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expired guest through middleware: %d", w.Code)
+	}
+}
+
+func TestGuestCannotExtendSessionByEditingCookie(t *testing.T) {
+	a := newAuth(t, nil)
+	start := time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC)
+	cookie := guestSession(t, a, start)
+	p, s, _ := strings.Cut(cookie.Value, ".")
+	payload, _ := dec(p)
+	payload[0]++ // push the expiry years into the future
+	forged := &http.Cookie{Name: cookieName, Value: enc(payload) + "." + s}
+	if _, ok := identifyAt(a, start, forged); ok {
+		t.Fatal("edited expiry accepted")
+	}
+}
+
+func TestLoginResponseCarriesExpiry(t *testing.T) {
+	a := newAuth(t, nil)
+	start := time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC)
+	a.now = func() time.Time { return start }
+	w := login(a, "correct horse")
+	var id Identity
+	if err := json.NewDecoder(w.Body).Decode(&id); err != nil {
+		t.Fatal(err)
+	}
+	if id.Via != "guest" || id.ExpiresAt == nil || !id.ExpiresAt.Equal(start.Add(10*time.Minute)) {
+		t.Fatalf("login response: %+v", id)
+	}
+}
+
+func TestTailscaleUsersHaveNoExpiry(t *testing.T) {
+	a := newAuth(t, nil)
+	a.now = func() time.Time { return time.Now().Add(365 * 24 * time.Hour) }
+	id, ok := a.Identify(req("GET", proxyAddr, map[string]string{"Tailscale-User-Login": "alice@example.com"}))
+	if !ok || id.Via != "tailscale" || id.ExpiresAt != nil {
+		t.Fatalf("tailscale identity: %+v %v", id, ok)
+	}
+	b, _ := json.Marshal(id)
+	if strings.Contains(string(b), "expiresAt") {
+		t.Fatalf("tailscale identity JSON mentions expiry: %s", b)
 	}
 }

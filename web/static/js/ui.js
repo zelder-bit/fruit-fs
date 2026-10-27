@@ -20,6 +20,20 @@ export function h(tag, attrs = {}, ...children) {
 
 export const $ = (sel, root = document) => root.querySelector(sel);
 
+// A guest whose session ran out is sent back to the sign-in screen, which
+// reads this flag (once) to say why.
+const ENDED_KEY = 'fruit-fs.guest-ended';
+export function markGuestEnded() {
+  try { sessionStorage.setItem(ENDED_KEY, '1'); } catch {}
+}
+export function takeGuestEnded() {
+  try {
+    const ended = sessionStorage.getItem(ENDED_KEY) === '1';
+    sessionStorage.removeItem(ENDED_KEY);
+    return ended;
+  } catch { return false; }
+}
+
 export class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
@@ -34,6 +48,7 @@ export async function api(method, url, body) {
     credentials: 'same-origin',
   });
   if (res.status === 401 && !url.endsWith('/api/me') && !url.endsWith('/api/login')) {
+    if (document.documentElement.dataset.via === 'guest') markGuestEnded();
     location.reload();
   }
   if (!res.ok) {

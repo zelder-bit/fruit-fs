@@ -4,7 +4,8 @@
 //   - Through Tailscale Serve: requests arriving from a trusted proxy address carry a
 //     Tailscale-User-Login header set by Tailscale itself. Headers from anywhere else
 //     are ignored, so nobody on the LAN can claim to be a tailnet user.
-//   - On the LAN: a password login gives a signed session cookie.
+//   - On the LAN: a password login gives a guest a short, signed session cookie.
+//     When it expires the guest has to sign in again.
 package auth
 
 import (
@@ -32,16 +33,21 @@ import (
 )
 
 const (
-	cookieName    = "fruitfs_session"
-	sessionLength = 30 * 24 * time.Hour
-	lanUser       = "lan"
+	cookieName  = "fruitfs_session"
+	guestLength = 10 * time.Minute
+	lanUser     = "lan"
 )
 
 type Identity struct {
-	User string `json:"user"`          // tailnet login, or "lan" for password sessions
-	Name string `json:"name"`          // display name
-	Via  string `json:"via"`           // "tailscale" or "password"
-	Pic  string `json:"pic,omitempty"` // Tailscale profile picture URL
+	User      string     `json:"user"`                // tailnet login, or "lan" for guests
+	Name      string     `json:"name"`                // display name
+	Via       string     `json:"via"`                 // "tailscale" or "guest"
+	Pic       string     `json:"pic,omitempty"`       // Tailscale profile picture URL
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"` // when a guest session ends
+}
+
+func guestIdentity(expires time.Time) Identity {
+	return Identity{User: lanUser, Name: "Guest", Via: "guest", ExpiresAt: &expires}
 }
 
 type ctxKey struct{}
@@ -128,8 +134,10 @@ func (a *Auth) Identify(r *http.Request) (Identity, bool) {
 			return Identity{User: login, Name: name, Via: "tailscale", Pic: r.Header.Get("Tailscale-User-Profile-Pic")}, true
 		}
 	}
-	if c, err := r.Cookie(cookieName); err == nil && a.cfg.PasswordHash != "" && a.validSession(c.Value) {
-		return Identity{User: lanUser, Name: "Home network", Via: "password"}, true
+	if c, err := r.Cookie(cookieName); err == nil && a.cfg.PasswordHash != "" {
+		if exp, ok := a.sessionExpiry(c.Value); ok {
+			return guestIdentity(exp), true
+		}
 	}
 	return Identity{}, false
 }
@@ -187,28 +195,36 @@ func (a *Auth) SameOrigin(r *http.Request, needHeader bool) bool {
 
 // --- sessions -------------------------------------------------------------
 
-// A session token is base64(expiry || nonce) "." base64(hmac).
-func (a *Auth) newSession() string {
+// A session token is base64(expiry || nonce) "." base64(hmac). The expiry is
+// signed, so a guest can't stretch their session by editing the cookie.
+func (a *Auth) newSession(length time.Duration) (string, time.Time) {
+	exp := a.now().Add(length).Truncate(time.Second)
 	payload := make([]byte, 8+16)
-	binary.BigEndian.PutUint64(payload, uint64(a.now().Add(sessionLength).Unix()))
+	binary.BigEndian.PutUint64(payload, uint64(exp.Unix()))
 	rand.Read(payload[8:])
-	return enc(payload) + "." + enc(a.sign(payload))
+	return enc(payload) + "." + enc(a.sign(payload)), exp
 }
 
-func (a *Auth) validSession(tok string) bool {
+// sessionExpiry checks a token and returns when it ends, or false if it is
+// forged, malformed or already over.
+func (a *Auth) sessionExpiry(tok string) (time.Time, bool) {
 	p, s, ok := strings.Cut(tok, ".")
 	if !ok {
-		return false
+		return time.Time{}, false
 	}
 	payload, err1 := dec(p)
 	sig, err2 := dec(s)
 	if err1 != nil || err2 != nil || len(payload) != 24 {
-		return false
+		return time.Time{}, false
 	}
 	if !hmac.Equal(sig, a.sign(payload)) {
-		return false
+		return time.Time{}, false
 	}
-	return a.now().Unix() < int64(binary.BigEndian.Uint64(payload))
+	exp := time.Unix(int64(binary.BigEndian.Uint64(payload)), 0)
+	if !a.now().Before(exp) {
+		return time.Time{}, false
+	}
+	return exp, true
 }
 
 func (a *Auth) sign(b []byte) []byte {
@@ -260,12 +276,13 @@ func (a *Auth) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.limiter.reset(ip)
+	tok, exp := a.newSession(guestLength)
 	http.SetCookie(w, &http.Cookie{
-		Name: cookieName, Value: a.newSession(), Path: "/",
-		MaxAge: int(sessionLength.Seconds()), HttpOnly: true,
+		Name: cookieName, Value: tok, Path: "/",
+		MaxAge: int(exp.Sub(a.now()).Seconds()), HttpOnly: true,
 		SameSite: http.SameSiteStrictMode, Secure: a.secure(r),
 	})
-	httpx.JSON(w, Identity{User: lanUser, Name: "Home network", Via: "password"})
+	httpx.JSON(w, guestIdentity(exp))
 }
 
 // Logout handles POST /api/logout.
