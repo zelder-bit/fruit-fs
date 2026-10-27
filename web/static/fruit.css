@@ -82,7 +82,7 @@ img { max-width: 100%; }
 :focus-visible { outline: 3px solid var(--banana); outline-offset: 2px; }
 
 .field { display: grid; gap: .3em; text-align: left; font-weight: 600; font-size: .9rem; }
-input[type="text"], input[type="password"], input[type="search"], textarea {
+input[type="text"], input[type="password"], input[type="search"], input[type="number"], textarea {
   font: inherit; color: var(--ink); background: var(--surface);
   border: 2px solid var(--line); border-radius: 12px; padding: .55em .8em; width: 100%;
 }
@@ -101,6 +101,7 @@ input:focus, textarea:focus { outline: none; border-color: var(--orange); }
 .login-card h1 { font-size: 2rem; }
 .login-card p { margin: 0; }
 .error { color: var(--berry); font-weight: 600; }
+.notice { background: color-mix(in srgb, var(--banana) 30%, var(--surface)); border-radius: 12px; padding: .6em .8em; font-weight: 600; }
 @keyframes bob { 50% { transform: translateY(-6px) rotate(-4deg); } }
 
 /* --- header ---------------------------------------------------------------- */
@@ -125,6 +126,18 @@ input:focus, textarea:focus { outline: none; border-color: var(--orange); }
 .user-chip img, .avatar { width: 28px; height: 28px; border-radius: 50%; flex: none; }
 .avatar { display: grid; place-items: center; background: var(--orange); color: #fff; font-weight: 700; }
 .user-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guest-left { flex: none; font-size: .8rem; font-weight: 700; padding: .1em .6em; border-radius: 999px;
+  background: color-mix(in srgb, var(--banana) 45%, var(--surface)); color: var(--ink); white-space: nowrap; }
+.guest-left.low { background: var(--berry); color: #fff; }
+
+/* --- admin ------------------------------------------------------------------ */
+
+.admin-card { max-width: 520px; background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 20px; display: grid; gap: 14px; }
+.admin-card p { margin: 0; }
+.switch { display: flex; align-items: center; gap: 10px; font-weight: 600; cursor: pointer; }
+.switch input { width: 22px; height: 22px; accent-color: var(--orange); }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; }
 
 main { max-width: 1200px; margin: 0 auto; padding: 16px var(--gutter) 120px; }
 
@@ -306,6 +319,7 @@ dialog.wide { width: min(1100px, calc(100vw - 2 * var(--gutter))); height: min(8
   .tabs a { flex: 1; text-align: center; }
   .user-name { display: none; }
   .user-chip { padding: 3px; }
+  .user-chip:has(.guest-left) { padding-right: 6px; }
   .selection-bar { top: 104px; border-radius: 18px; }
   .toolbar { flex-direction: column; align-items: stretch; }
   .tools { display: grid; grid-template-columns: 1fr 1fr 1fr auto; }

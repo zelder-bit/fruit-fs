@@ -15,6 +15,7 @@
       <img src="svg/logo.svg" alt="" class="login-logo">
       <h1>fruit-fs</h1>
       <p class="muted">Fresh files, picked from home.</p>
+      <p class="notice" hidden></p>
       <label class="field">
         <span>Password</span>
         <input type="password" name="password" autocomplete="current-password" required autofocus>
@@ -35,6 +36,7 @@
         <a href="#/files/" data-tab="files">Files</a>
         <a href="#/drop" data-tab="drop">Drop</a>
         <a href="#/trash" data-tab="trash">Trash</a>
+        <a href="#/admin" data-tab="admin" hidden>Admin</a>
       </nav>
       <div class="top-right">
         <button class="icon-btn" id="theme" title="Switch light / dark" aria-label="Switch light or dark theme"></button>
@@ -82,6 +84,11 @@
         </div>
         <p class="muted">Deleted things wait here for 30 days, then they're gone for good.</p>
         <div id="trash-list" class="list"></div>
+      </section>
+
+      <section id="view-admin" class="view" hidden>
+        <div class="toolbar"><h2>Settings</h2></div>
+        <div id="admin-body"></div>
       </section>
     </main>
   </div>

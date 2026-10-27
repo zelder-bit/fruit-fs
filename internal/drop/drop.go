@@ -204,6 +204,11 @@ func (h *Hub) ws(w http.ResponseWriter, r *http.Request) {
 	h.log.Info("drop: device joined", "name", c.Name, "user", id.User)
 
 	ctx, cancel := context.WithCancel(r.Context())
+	if id.ExpiresAt != nil {
+		// A guest's socket closes when their session ends, like everything else they can reach.
+		t := time.AfterFunc(time.Until(*id.ExpiresAt), cancel)
+		defer t.Stop()
+	}
 	defer func() {
 		cancel()
 		h.leave(c)
