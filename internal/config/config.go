@@ -11,6 +11,7 @@ import (
 
 type Config struct {
 	DataDir        string         // root of the files that are served
+	StateDir       string         // private state (session key), outside DataDir
 	Listen         string         // address for the HTTP server
 	TrustedProxies []netip.Prefix // where Tailscale Serve connects from
 	AllowedUsers   map[string]bool
@@ -21,6 +22,7 @@ type Config struct {
 func FromEnv() (*Config, error) {
 	c := &Config{
 		DataDir:      env("FRUITFS_DATA", "/data"),
+		StateDir:     env("FRUITFS_STATE", "/state"),
 		Listen:       env("FRUITFS_LISTEN", ":8080"),
 		PasswordHash: strings.TrimSpace(os.Getenv("FRUITFS_PASSWORD_HASH")),
 		AllowedUsers: map[string]bool{},

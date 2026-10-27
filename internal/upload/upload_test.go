@@ -129,3 +129,30 @@ func TestOtherUsersCannotTouchUpload(t *testing.T) {
 		t.Fatal("another user wrote to the upload", w.Code)
 	}
 }
+
+func TestCancelStopsUpload(t *testing.T) {
+	data, h := setup(t, "alice")
+	id := create(t, h, "gone.txt", 10)
+	if w := call(h, "DELETE", "/api/uploads/"+id, nil, nil); w.Code != 204 {
+		t.Fatal("cancel", w.Code)
+	}
+	if w := call(h, "PATCH", "/api/uploads/"+id, bytes.NewReader([]byte("0123456789")), map[string]string{"Upload-Offset": "0"}); w.Code != 404 {
+		t.Fatal("cancelled upload still accepted data", w.Code)
+	}
+	if _, err := os.Stat(filepath.Join(data, "gone.txt")); err == nil {
+		t.Fatal("cancelled upload was published")
+	}
+}
+
+func TestConcurrentFinishDoesNotOverwrite(t *testing.T) {
+	data, h := setup(t, "alice")
+	a := create(t, h, "same.txt", 1)
+	b := create(t, h, "same.txt", 1)
+	call(h, "PATCH", "/api/uploads/"+a, bytes.NewReader([]byte("A")), map[string]string{"Upload-Offset": "0"})
+	if w := call(h, "PATCH", "/api/uploads/"+b, bytes.NewReader([]byte("B")), map[string]string{"Upload-Offset": "0"}); w.Code != 409 {
+		t.Fatal("second upload to the same name should conflict", w.Code)
+	}
+	if got, _ := os.ReadFile(filepath.Join(data, "same.txt")); string(got) != "A" {
+		t.Fatalf("file = %q", got)
+	}
+}

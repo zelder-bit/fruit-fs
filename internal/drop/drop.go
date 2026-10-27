@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"math/big"
 	"net/http"
@@ -36,10 +37,15 @@ import (
 const (
 	maxText      = 64 << 10
 	maxFiles     = 500
+	maxClients   = 64
+	maxPending   = 8               // open transfers per sending tab
 	offerTimeout = 2 * time.Minute // how long an offer waits for an answer
 	joinTimeout  = time.Minute     // how long one side of a file waits for the other
+	idle         = 2 * time.Minute // a stream fails if it makes no progress for this long
 	InboxDir     = "Drop inbox"
 )
+
+var errGone = errors.New("the other side went away")
 
 // msg is every WebSocket message in either direction; unused fields stay empty.
 type msg struct {
@@ -80,17 +86,27 @@ type transfer struct {
 	from, to *client
 	files    []fileInfo
 	accepted bool
+	save     bool // the server saves to the inbox instead of a browser receiving
 	slots    []*slot
 	created  time.Time
 }
 
-// slot joins one sender request to one receiver for a single file.
+// slot joins one sender request to one receiver for a single file. Each side
+// can be claimed once, so a retried request can't mix bytes into the stream.
 type slot struct {
-	once     sync.Once
+	recvOnce sync.Once
+	sendOnce sync.Once
 	ready    chan struct{} // closed when the receiver is attached
 	pr       *io.PipeReader
 	pw       *io.PipeWriter
 	consumed bool
+}
+
+// claim runs once.Do and reports whether this caller won.
+func claim(once *sync.Once) bool {
+	won := false
+	once.Do(func() { won = true })
+	return won
 }
 
 func newSlot() *slot {
@@ -104,11 +120,12 @@ type Hub struct {
 	transfers map[string]*transfer
 	root      *os.Root
 	auth      *auth.Auth
+	maxSave   int64 // largest file "save to fruit-fs" accepts (0 = no limit)
 	log       *slog.Logger
 }
 
-func New(root *os.Root, a *auth.Auth, log *slog.Logger) *Hub {
-	return &Hub{clients: map[string]*client{}, transfers: map[string]*transfer{}, root: root, auth: a, log: log}
+func New(root *os.Root, a *auth.Auth, maxSave int64, log *slog.Logger) *Hub {
+	return &Hub{clients: map[string]*client{}, transfers: map[string]*transfer{}, root: root, auth: a, maxSave: maxSave, log: log}
 }
 
 func (h *Hub) Register(mux *http.ServeMux, wrap func(http.Handler) http.Handler) {
@@ -164,6 +181,13 @@ func (h *Hub) ws(w http.ResponseWriter, r *http.Request) {
 	// Browsers can't add our X-Fruit header to a WebSocket, so check Origin only.
 	if !h.auth.SameOrigin(r, false) || r.Header.Get("Origin") == "" {
 		httpx.Error(w, http.StatusForbidden, "cross-site request refused")
+		return
+	}
+	h.mu.Lock()
+	full := len(h.clients) >= maxClients
+	h.mu.Unlock()
+	if full {
+		httpx.Error(w, http.StatusServiceUnavailable, "too many devices connected")
 		return
 	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
@@ -283,6 +307,16 @@ func (h *Hub) handle(c *client, m msg) {
 			deliver(c, msg{Type: "error", Error: "that device isn't around any more"})
 			return
 		}
+		pending := 0
+		for _, t := range h.transfers {
+			if t.from == c {
+				pending++
+			}
+		}
+		if pending >= maxPending {
+			deliver(c, msg{Type: "error", Error: "wait for your other sends to finish"})
+			return
+		}
 		for i := range m.Files {
 			m.Files[i].Name = safeName(m.Files[i].Name)
 			if m.Files[i].Size < 0 {
@@ -314,11 +348,28 @@ func (h *Hub) handle(c *client, m msg) {
 			h.dropTransferLocked(t.id, "declined")
 			return
 		}
+		if m.Save && h.maxSave > 0 {
+			for _, f := range t.files {
+				if f.Size > h.maxSave {
+					deliver(c, msg{Type: "error", Error: f.Name + " is bigger than the upload limit"})
+					return
+				}
+			}
+		}
 		t.accepted = true
+		t.save = m.Save
 		deliver(t.from, msg{Type: "answer", Transfer: t.id, Accept: true, Save: m.Save})
 		if m.Save {
 			go h.saveToInbox(t)
 		}
+		// An accepted transfer that never starts moving is dropped too.
+		time.AfterFunc(joinTimeout+offerTimeout, func() {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			if cur := h.transfers[t.id]; cur != nil && !cur.started() {
+				h.dropTransferLocked(t.id, "nothing was sent")
+			}
+		})
 
 	case "cancel":
 		if t := h.transfers[m.Transfer]; t != nil && (t.from == c || t.to == c) {
@@ -360,6 +411,18 @@ func safeName(n string) string {
 
 // --- file bytes ------------------------------------------------------------
 
+// started reports whether any file has begun streaming.
+func (t *transfer) started() bool {
+	for _, s := range t.slots {
+		select {
+		case <-s.ready:
+			return true
+		default:
+		}
+	}
+	return false
+}
+
 // slotFor finds the transfer slot and checks the caller is the right party.
 func (h *Hub) slotFor(r *http.Request, sender bool) (*transfer, *slot, int, error) {
 	h.mu.Lock()
@@ -389,6 +452,12 @@ func (h *Hub) send(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusNotFound, err.Error())
 		return
 	}
+	if !claim(&s.sendOnce) {
+		httpx.Error(w, http.StatusConflict, "already being sent")
+		return
+	}
+	// If the sender disconnects, end the stream so the receiver isn't left waiting.
+	defer context.AfterFunc(r.Context(), func() { s.pw.CloseWithError(errGone) })()
 	select {
 	case <-s.ready:
 	case <-time.After(joinTimeout):
@@ -398,7 +467,7 @@ func (h *Hub) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	want := t.files[i].Size
-	n, err := io.Copy(s.pw, io.LimitReader(r.Body, want))
+	n, err := io.Copy(s.pw, io.LimitReader(httpx.IdleBody(w, r, idle), want))
 	if err == nil && n != want {
 		err = fmt.Errorf("sent %d of %d bytes", n, want)
 	}
@@ -408,7 +477,9 @@ func (h *Hub) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.pw.Close()
-	h.finishSlot(t, i)
+	if !t.save { // for inbox saves, saveToInbox reports completion once the file is on disk
+		h.finishSlot(t, i)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -419,18 +490,18 @@ func (h *Hub) receive(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusNotFound, err.Error())
 		return
 	}
-	first := false
-	s.once.Do(func() { first = true; close(s.ready) })
-	if !first {
-		httpx.Error(w, http.StatusConflict, "already being downloaded")
+	if t.save || !claim(&s.recvOnce) {
+		httpx.Error(w, http.StatusConflict, "already being received")
 		return
 	}
+	close(s.ready)
+	defer context.AfterFunc(r.Context(), func() { s.pr.CloseWithError(errGone) })()
 	f := t.files[i]
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.FormatInt(f.Size, 10))
 	w.Header().Set("Content-Disposition", `attachment; filename="`+asciiName(f.Name)+`"; filename*=UTF-8''`+pathEscape(f.Name))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if _, err := io.Copy(w, s.pr); err != nil {
+	if _, err := io.Copy(idleWriter(w, idle), s.pr); err != nil {
 		s.pr.CloseWithError(err)
 		panic(http.ErrAbortHandler) // cut the connection so the browser marks it failed
 	}
@@ -438,49 +509,69 @@ func (h *Hub) receive(w http.ResponseWriter, r *http.Request) {
 
 // saveToInbox plays the receiver itself, writing each file into "Drop inbox/".
 func (h *Hub) saveToInbox(t *transfer) {
+	fail := func(i int, err error) {
+		h.log.Warn("drop: save failed", "file", t.files[i].Name, "err", err)
+		h.mu.Lock()
+		h.dropTransferLocked(t.id, "couldn't save "+t.files[i].Name)
+		h.mu.Unlock()
+	}
 	if err := h.root.MkdirAll(InboxDir, 0o755); err != nil {
-		h.log.Error("drop: inbox", "err", err)
+		fail(0, err)
 		return
 	}
 	for i, s := range t.slots {
-		s.once.Do(func() { close(s.ready) })
-		name := freeName(h.root, InboxDir, t.files[i].Name)
+		if !claim(&s.recvOnce) {
+			continue
+		}
+		close(s.ready)
 		tmp := path.Join(files.StateDir, "uploads", "drop-"+t.id+"-"+strconv.Itoa(i)+".part")
 		f, err := h.root.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			s.pr.CloseWithError(err)
-			continue
+			fail(i, err)
+			return
 		}
 		_, err = io.Copy(f, s.pr)
-		f.Close()
+		err = errors.Join(err, f.Close())
+		var name string
 		if err == nil {
-			err = h.root.Rename(tmp, name)
+			name, err = publishFree(h.root, tmp, InboxDir, t.files[i].Name)
 		}
 		if err != nil {
+			s.pr.CloseWithError(err)
 			h.root.Remove(tmp)
-			h.log.Warn("drop: save failed", "file", t.files[i].Name, "err", err)
-			continue
+			fail(i, err)
+			return
 		}
 		h.log.Info("drop: saved", "path", name)
+		h.finishSlot(t, i)
 	}
 }
 
-func freeName(root *os.Root, dir, name string) string {
+// publishFree moves tmp into dir as name, or "name (2)", "name (3)"... if taken.
+func publishFree(root *os.Root, tmp, dir, name string) (string, error) {
 	ext := path.Ext(name)
 	stem := strings.TrimSuffix(name, ext)
-	p := path.Join(dir, name)
-	for n := 2; ; n++ {
-		if _, err := root.Lstat(p); err != nil {
-			return p
+	for n := 1; n < 1000; n++ {
+		p := path.Join(dir, name)
+		if n > 1 {
+			p = path.Join(dir, fmt.Sprintf("%s (%d)%s", stem, n, ext))
 		}
-		p = path.Join(dir, fmt.Sprintf("%s (%d)%s", stem, n, ext))
+		err := files.PublishNoReplace(root, tmp, p)
+		if !errors.Is(err, fs.ErrExist) {
+			return p, err
+		}
 	}
+	return "", errors.New("too many files with that name")
 }
 
 // finishSlot forgets the transfer once every file has gone through.
 func (h *Hub) finishSlot(t *transfer, i int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.transfers[t.id] != t {
+		return // already cancelled
+	}
 	t.slots[i].consumed = true
 	for _, s := range t.slots {
 		if !s.consumed {
@@ -512,3 +603,16 @@ func pathEscape(n string) string {
 	}
 	return b.String()
 }
+
+// idleWriter fails a download if the receiver stops reading for d.
+func idleWriter(w http.ResponseWriter, d time.Duration) io.Writer {
+	rc := http.NewResponseController(w)
+	return writeFunc(func(p []byte) (int, error) {
+		rc.SetWriteDeadline(time.Now().Add(d))
+		return w.Write(p)
+	})
+}
+
+type writeFunc func([]byte) (int, error)
+
+func (f writeFunc) Write(p []byte) (int, error) { return f(p) }

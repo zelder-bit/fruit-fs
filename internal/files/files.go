@@ -115,7 +115,7 @@ func (s *Service) list(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	f, err := s.root.Open(p)
+	f, err := openRead(s.root, p)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -171,7 +171,7 @@ func (s *Service) download(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	f, err := s.root.Open(p)
+	f, err := openRead(s.root, p)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -184,6 +184,10 @@ func (s *Service) download(w http.ResponseWriter, r *http.Request) {
 	}
 	if fi.IsDir() {
 		httpx.Error(w, http.StatusBadRequest, "that is a folder; download it as a zip")
+		return
+	}
+	if !fi.Mode().IsRegular() {
+		httpx.Error(w, http.StatusBadRequest, "that is not a regular file")
 		return
 	}
 	name := fi.Name()

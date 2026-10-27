@@ -11,6 +11,7 @@
 package upload
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -33,8 +34,10 @@ import (
 )
 
 const (
-	dir      = files.StateDir + "/uploads"
-	maxStale = 24 * time.Hour
+	dir        = files.StateDir + "/uploads"
+	maxStale   = 24 * time.Hour
+	maxPending = 256              // unfinished uploads across everyone
+	idle       = 2 * time.Minute // a chunk fails if no bytes arrive for this long
 )
 
 var validID = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -52,6 +55,7 @@ type Service struct {
 	maxUpload int64
 	log       *slog.Logger
 	locks     sync.Map // id -> *sync.Mutex
+	active    sync.Map // id -> context.CancelFunc of the chunk being received
 }
 
 func New(root *os.Root, maxUpload int64, log *slog.Logger) (*Service, error) {
@@ -95,6 +99,10 @@ func (s *Service) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if fi, err := s.root.Lstat(p); err == nil && (!body.Replace || fi.IsDir()) {
 		httpx.Error(w, http.StatusConflict, "something with that name already exists")
+		return
+	}
+	if des, _ := fs.ReadDir(s.root.FS(), dir); len(des) >= 2*maxPending {
+		httpx.Error(w, http.StatusTooManyRequests, "too many unfinished uploads; finish or cancel some first")
 		return
 	}
 	b := make([]byte, 16)
@@ -184,11 +192,18 @@ func (s *Service) patch(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, err)
 		return
 	}
+	ctx, stop := context.WithCancel(r.Context())
+	s.active.Store(id, stop)
+	defer func() { s.active.Delete(id); stop() }()
+	body := cancellable(ctx, httpx.IdleBody(w, r, idle))
 	remaining := m.Size - off
-	n, copyErr := io.Copy(f, io.LimitReader(r.Body, remaining))
+	n, copyErr := io.Copy(f, io.LimitReader(body, remaining))
 	closeErr := f.Close()
 	off += n
-	if extra, _ := io.ReadFull(r.Body, make([]byte, 1)); extra > 0 {
+	if ctx.Err() != nil {
+		return // cancelled, or the client went away
+	}
+	if extra, _ := io.ReadFull(body, make([]byte, 1)); extra > 0 {
 		httpx.Error(w, http.StatusRequestEntityTooLarge, "more data than the declared size")
 		return
 	}
@@ -196,6 +211,11 @@ func (s *Service) patch(w http.ResponseWriter, r *http.Request) {
 		// A dropped connection is normal; the client resumes from Upload-Offset.
 		w.Header().Set("Upload-Offset", strconv.FormatInt(off, 10))
 		httpx.Error(w, http.StatusBadRequest, "chunk interrupted")
+		return
+	}
+	// Cancelled while we were writing? Then the metadata is gone.
+	if _, err := s.root.Stat(metaPath(id)); err != nil {
+		httpx.Error(w, http.StatusNotFound, "no such upload")
 		return
 	}
 	done := off == m.Size
@@ -216,10 +236,19 @@ func (s *Service) finish(id string, m meta) error {
 			return err
 		}
 	}
-	if fi, err := s.root.Lstat(m.Path); err == nil && (!m.Replace || fi.IsDir()) {
+	var err error
+	if m.Replace {
+		if fi, lerr := s.root.Lstat(m.Path); lerr == nil && fi.IsDir() {
+			return errExists
+		}
+		err = s.root.Rename(partPath(id), m.Path)
+	} else {
+		err = files.PublishNoReplace(s.root, partPath(id), m.Path)
+	}
+	if errors.Is(err, fs.ErrExist) {
 		return errExists
 	}
-	if err := s.root.Rename(partPath(id), m.Path); err != nil {
+	if err != nil {
 		return err
 	}
 	s.root.Remove(metaPath(id))
@@ -244,8 +273,16 @@ func (s *Service) cancel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Stop a chunk that's still arriving, then wait for it to let go.
+	if stop, ok := s.active.Load(id); ok {
+		stop.(context.CancelFunc)()
+	}
+	l, _ := s.locks.LoadOrStore(id, &sync.Mutex{})
+	mu := l.(*sync.Mutex)
+	mu.Lock()
 	s.root.Remove(partPath(id))
 	s.root.Remove(metaPath(id))
+	mu.Unlock()
 	s.locks.Delete(id)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -265,8 +302,14 @@ func (s *Service) Janitor(stop <-chan struct{}) {
 			id, isPart := strings.CutSuffix(de.Name(), ".part")
 			// The .part file's time moves with every chunk, so it says whether the upload is alive.
 			if fi, err := de.Info(); isPart && err == nil && time.Since(fi.ModTime()) > maxStale {
+				mu, ok := s.lock(id)
+				if !ok {
+					continue // a chunk is arriving right now, so it isn't abandoned
+				}
 				s.root.Remove(partPath(id))
 				s.root.Remove(metaPath(id))
+				mu.Unlock()
+				s.locks.Delete(id)
 			}
 		}
 		select {
@@ -276,3 +319,17 @@ func (s *Service) Janitor(stop <-chan struct{}) {
 		}
 	}
 }
+
+// cancellable stops a read as soon as ctx is cancelled.
+func cancellable(ctx context.Context, r io.Reader) io.Reader {
+	return readFunc(func(p []byte) (int, error) {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		return r.Read(p)
+	})
+}
+
+type readFunc func([]byte) (int, error)
+
+func (f readFunc) Read(p []byte) (int, error) { return f(p) }

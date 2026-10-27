@@ -60,7 +60,13 @@ func serve() error {
 	if err != nil {
 		return fmt.Errorf("data directory: %w", err)
 	}
-	a, err := auth.New(cfg, filepath.Join(cfg.DataDir, files.StateDir))
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		return fmt.Errorf("state directory: %w", err)
+	}
+	if inside(cfg.StateDir, cfg.DataDir) {
+		return fmt.Errorf("FRUITFS_STATE must not be inside FRUITFS_DATA")
+	}
+	a, err := auth.New(cfg, cfg.StateDir)
 	if err != nil {
 		return fmt.Errorf("session key: %w", err)
 	}
@@ -68,7 +74,7 @@ func serve() error {
 	if err != nil {
 		return fmt.Errorf("uploads: %w", err)
 	}
-	hub := drop.New(fsvc.Root(), a, log)
+	hub := drop.New(fsvc.Root(), a, cfg.MaxUpload, log)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
@@ -112,6 +118,17 @@ func serve() error {
 		return err
 	}
 	return nil
+}
+
+// inside reports whether dir is base or below it.
+func inside(dir, base string) bool {
+	d, err1 := filepath.Abs(dir)
+	b, err2 := filepath.Abs(base)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	rel, err := filepath.Rel(b, d)
+	return err == nil && (rel == "." || !strings.HasPrefix(rel, ".."))
 }
 
 // securityHeaders sets defaults for every response; file downloads tighten them further.

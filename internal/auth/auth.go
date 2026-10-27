@@ -61,16 +61,23 @@ type Auth struct {
 	cfg     *config.Config
 	key     []byte
 	limiter *limiter
+	hashing chan struct{} // at most 2 password checks at once (each uses 64 MiB)
 	now     func() time.Time
 }
 
-// New loads (or creates) the session signing key in stateDir.
+// New loads (or creates) the session signing key in stateDir. Keep stateDir
+// outside the served data directory so no file API can ever reach the key.
 func New(cfg *config.Config, stateDir string) (*Auth, error) {
-	key, err := loadKey(filepath.Join(stateDir, "session.key"))
+	raw, err := loadKey(filepath.Join(stateDir, "session.key"))
 	if err != nil {
 		return nil, err
 	}
-	return &Auth{cfg: cfg, key: key, limiter: newLimiter(10, 15*time.Minute), now: time.Now}, nil
+	// Mixing the password hash into the key means changing the password signs
+	// everyone out.
+	m := hmac.New(sha256.New, raw)
+	m.Write([]byte("session:" + cfg.PasswordHash))
+	return &Auth{cfg: cfg, key: m.Sum(nil), limiter: newLimiter(10, 15*time.Minute),
+		hashing: make(chan struct{}, 2), now: time.Now}, nil
 }
 
 func loadKey(path string) ([]byte, error) {
@@ -121,7 +128,7 @@ func (a *Auth) Identify(r *http.Request) (Identity, bool) {
 			return Identity{User: login, Name: name, Via: "tailscale", Pic: r.Header.Get("Tailscale-User-Profile-Pic")}, true
 		}
 	}
-	if c, err := r.Cookie(cookieName); err == nil && a.validSession(c.Value) {
+	if c, err := r.Cookie(cookieName); err == nil && a.cfg.PasswordHash != "" && a.validSession(c.Value) {
 		return Identity{User: lanUser, Name: "Home network", Via: "password"}, true
 	}
 	return Identity{}, false
@@ -230,7 +237,9 @@ func (a *Auth) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := remoteIP(r).String()
-	if !a.limiter.allow(ip) {
+	// Each attempt is counted before any work is done, so parallel requests
+	// can't slip past the limit.
+	if !a.limiter.take(ip) {
 		httpx.Error(w, http.StatusTooManyRequests, "too many tries, wait a few minutes")
 		return
 	}
@@ -238,9 +247,15 @@ func (a *Auth) Login(w http.ResponseWriter, r *http.Request) {
 	if !httpx.Decode(w, r, &body) {
 		return
 	}
+	select {
+	case a.hashing <- struct{}{}:
+	default:
+		httpx.Error(w, http.StatusTooManyRequests, "busy, try again in a moment")
+		return
+	}
 	ok, err := VerifyPassword(body.Password, a.cfg.PasswordHash)
+	<-a.hashing
 	if err != nil || !ok {
-		a.limiter.fail(ip)
 		httpx.Error(w, http.StatusUnauthorized, "wrong password")
 		return
 	}
@@ -255,6 +270,10 @@ func (a *Auth) Login(w http.ResponseWriter, r *http.Request) {
 
 // Logout handles POST /api/logout.
 func (a *Auth) Logout(w http.ResponseWriter, r *http.Request) {
+	if !a.SameOrigin(r, true) {
+		httpx.Error(w, http.StatusForbidden, "cross-site request refused")
+		return
+	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -299,16 +318,18 @@ func (l *limiter) prune(ip string, now time.Time) []time.Time {
 	return kept
 }
 
-func (l *limiter) allow(ip string) bool {
+// take records an attempt and reports whether it is within the limit.
+// A successful login clears the record with reset.
+func (l *limiter) take(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return len(l.prune(ip, time.Now())) < l.max
-}
-
-func (l *limiter) fail(ip string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.fails[ip] = append(l.prune(ip, time.Now()), time.Now())
+	now := time.Now()
+	kept := l.prune(ip, now)
+	if len(kept) >= l.max {
+		return false
+	}
+	l.fails[ip] = append(kept, now)
+	return true
 }
 
 func (l *limiter) reset(ip string) {

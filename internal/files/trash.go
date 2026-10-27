@@ -107,15 +107,11 @@ func (s *Service) trashRestore(w http.ResponseWriter, r *http.Request) {
 		if it.ID != body.ID {
 			continue
 		}
-		if _, err := s.root.Lstat(it.Orig); err == nil {
-			s.fail(w, fs.ErrExist)
-			return
-		}
 		if parent := path.Dir(it.Orig); parent != "." {
 			s.root.MkdirAll(parent, 0o755)
 		}
 		dir := path.Join(trashDir, it.ID)
-		if err := s.root.Rename(path.Join(dir, path.Base(it.Orig)), it.Orig); err != nil {
+		if err := PublishNoReplace(s.root, path.Join(dir, path.Base(it.Orig)), it.Orig); err != nil {
 			s.fail(w, err)
 			return
 		}

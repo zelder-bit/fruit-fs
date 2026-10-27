@@ -162,3 +162,41 @@ func TestPasswordHashFormat(t *testing.T) {
 		t.Fatal("malformed hash accepted")
 	}
 }
+
+func TestParallelLoginsCountedUpFront(t *testing.T) {
+	a := newAuth(t, nil)
+	done := make(chan int, 30)
+	for range 30 {
+		go func() { done <- login(a, "nope").Code }()
+	}
+	limited := 0
+	for range 30 {
+		if <-done == http.StatusTooManyRequests {
+			limited++
+		}
+	}
+	// Only 10 attempts may reach the password check; the rest are refused.
+	if limited < 20 {
+		t.Fatalf("only %d of 30 parallel attempts were limited", limited)
+	}
+}
+
+func TestSessionsEndWhenPasswordChangesOrIsRemoved(t *testing.T) {
+	dir := t.TempDir()
+	hash, _ := HashPassword("correct horse")
+	cfg := &config.Config{PasswordHash: hash, AllowedUsers: map[string]bool{}}
+	a, _ := New(cfg, dir)
+	cookie := login(a, "correct horse").Result().Cookies()[0]
+
+	other, _ := HashPassword("battery staple")
+	b, _ := New(&config.Config{PasswordHash: other, AllowedUsers: map[string]bool{}}, dir)
+	r := req("GET", lanAddr, nil)
+	r.AddCookie(cookie)
+	if _, ok := b.Identify(r); ok {
+		t.Fatal("session survived a password change")
+	}
+	c, _ := New(&config.Config{TrustedProxies: cfg.TrustedProxies, AllowedUsers: map[string]bool{}}, dir)
+	if _, ok := c.Identify(r); ok {
+		t.Fatal("session accepted with password login turned off")
+	}
+}

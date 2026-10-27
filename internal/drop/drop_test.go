@@ -39,7 +39,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	root, _ := os.OpenRoot(data)
-	hub := New(root, a, slog.New(slog.DiscardHandler))
+	hub := New(root, a, 0, slog.New(slog.DiscardHandler))
 	mux := http.NewServeMux()
 	hub.Register(mux, a.Middleware)
 	srv := httptest.NewServer(mux)
@@ -180,5 +180,40 @@ func TestDeclineAndCrossSiteSocket(t *testing.T) {
 	h := http.Header{"Tailscale-User-Login": {"alice@example.com"}, "Origin": {"https://evil.example"}}
 	if _, _, err := websocket.Dial(ctx, strings.Replace(e.srv.URL, "http", "ws", 1)+"/api/drop/ws", &websocket.DialOptions{HTTPHeader: h}); err == nil {
 		t.Fatal("cross-site WebSocket accepted")
+	}
+}
+
+func TestReceiverDisconnectFreesSender(t *testing.T) {
+	e := newEnv(t)
+	a := e.open(t, "alice@example.com")
+	b := e.open(t, "alice@example.com")
+	a.send(msg{Type: "offer", To: b.me.ID, Files: []fileInfo{{Name: "big.bin", Size: 64 << 20}}})
+	offer := b.wait("offer")
+	b.send(msg{Type: "answer", Transfer: offer.Transfer, Accept: true})
+	a.wait("answer")
+
+	// The receiver starts, reads a little, then hangs up.
+	ctx, cancel := context.WithCancel(context.Background())
+	r, _ := http.NewRequestWithContext(ctx, "GET", e.srv.URL+"/api/drop/"+offer.Transfer+"/0", nil)
+	r.Header.Set("Tailscale-User-Login", "alice@example.com")
+	go func() {
+		if resp, err := http.DefaultClient.Do(r); err == nil {
+			io.ReadFull(resp.Body, make([]byte, 1<<20))
+			cancel()
+		}
+	}()
+	sent := make(chan struct{})
+	go func() {
+		e.req("POST", "/api/drop/"+offer.Transfer+"/0", "alice@example.com", io.LimitReader(rand.Reader, 64<<20))
+		close(sent)
+	}()
+	select {
+	case <-sent:
+	case <-time.After(10 * time.Second):
+		t.Fatal("sender stayed blocked after the receiver left")
+	}
+	// A second sender for the same file is refused.
+	if resp, _ := e.req("POST", "/api/drop/"+offer.Transfer+"/0", "alice@example.com", strings.NewReader("x")); resp != nil && resp.StatusCode == 204 {
+		t.Fatal("second sender accepted")
 	}
 }

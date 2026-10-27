@@ -56,3 +56,18 @@ The code is split into small packages, each with one job:
 - **`cmd/fruit-fs`** is the starting point that wires everything together. It can also make a password fingerprint (`fruit-fs hash-password`) and check that the server is healthy (`fruit-fs healthcheck`), which Docker uses to restart the app if it ever stops answering.
 
 **Tests.** Each package has automatic tests, small programs that try things and check the answers. They try to break in on purpose: faking the Tailscale note from the wrong address, sneaking out of the data folder with `../` or a shortcut, uploading over an existing file, cutting an upload off halfway and resuming it, another user grabbing someone's drop, and a different website trying to open the drop connection. All of them must fail safely for the tests to pass. They run inside Docker with `scripts/go.sh test ./...`, so Go doesn't even need to be installed.
+
+### 3. Fixes from a second reviewer
+
+A different AI coding tool (OpenAI's Codex) read the server code with fresh eyes and acted like an attacker, the way a school might bring in an outside inspector. It found 11 problems. None could be used by a stranger on the internet, but they were worth fixing:
+
+- **The cookie key moved out of the shared folder.** The secret key that stamps login cookies used to live in a hidden folder inside the data folder. If someone ever made a shortcut (symlink) pointing at that hidden folder, a signed-in user could have read the key and forged cookies. The key now lives in a separate `state` folder that the file browser can't reach at all (`FRUITFS_STATE`). Changing the password now also signs everyone out.
+- **Password guessing can't be done in bulk.** Before, a script could fire off many guesses at the same instant, before any of them counted as a failure. Each guess is now counted the moment it arrives, and only two password checks can run at once. Each check deliberately uses 64 MB of memory to make guessing slow, so letting hundreds run together could have overloaded the server.
+- **Stalled connections get hung up.** A request that sends its data very slowly, or stops halfway, now gets cut off: a login has 15 seconds, and a transfer may run for hours as long as data keeps moving, but two minutes of silence ends it.
+- **Limits on everything.** There are now caps on unfinished uploads, connected devices and pending drops, and "save to fruit-fs" follows the same size limit as normal uploads.
+- **Drop cleans up after itself.** If either device disconnects mid-transfer, the other side is told and the server lets go of the connection. Each file in a drop can be claimed by only one sender and one receiver. And "Delivered" is only shown once a saved file is really on the disk.
+- **No accidental overwrites.** Two uploads with the same name finishing at the same moment used to be able to overwrite each other. Finishing now uses a *hard link*, a second name for the same file that the operating system refuses to create if the name is already taken, so exactly one upload wins and the other gets a "name taken" message.
+- **Odd files can't freeze it.** A *FIFO* is a special file that waits forever for someone to write into it. Opening one used to hang the request; now the server checks what kind of file it is first.
+- **Smaller fixes:** signing out also requires the app's own header, and turning off password login now also cancels existing password sessions.
+
+New tests check each of these, for example 30 password guesses at once (at least 20 must be refused), cancelling an upload mid-way, and a receiver hanging up partway through a 64 MB drop.

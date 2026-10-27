@@ -4,7 +4,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +14,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func setup(t *testing.T) (*Service, string, http.Handler) {
@@ -159,5 +163,40 @@ func TestZipAndSearch(t *testing.T) {
 	w = do(h, "GET", "/api/search?q=CAT", nil)
 	if !strings.Contains(w.Body.String(), "photos/cat.jpg") {
 		t.Fatalf("search: %s", w.Body)
+	}
+}
+
+func TestFIFODoesNotHang(t *testing.T) {
+	_, data, h := setup(t)
+	if err := syscall.Mkfifo(filepath.Join(data, "pipe"), 0o644); err != nil {
+		t.Skip("no FIFOs here:", err)
+	}
+	done := make(chan int)
+	go func() { done <- do(h, "GET", "/api/dl?path=pipe", nil).Code }()
+	go func() { do(h, "GET", "/api/ls?path=pipe", nil) }()
+	select {
+	case code := <-done:
+		if code == 200 {
+			t.Fatal("FIFO was served")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("download of a FIFO hung")
+	}
+}
+
+func TestPublishNoReplace(t *testing.T) {
+	s, data, _ := setup(t)
+	os.WriteFile(filepath.Join(data, "a.part"), []byte("new"), 0o644)
+	if err := PublishNoReplace(s.root, "a.part", "notes.txt"); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("overwrote an existing file: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(data, "notes.txt")); string(b) != "hello" {
+		t.Fatal("existing file changed")
+	}
+	if err := PublishNoReplace(s.root, "a.part", "fresh.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(data, "a.part")); !os.IsNotExist(err) {
+		t.Fatal("source left behind")
 	}
 }
