@@ -46,7 +46,7 @@ fi
 
 found=0
 for p in "${PATTERNS[@]}"; do
-  hits=$(printf '%s\n' "$content" | grep -E -- "$p" | grep -Ev -- "$ALLOW" || true)
+  hits=$(printf '%s\n' "$content" | grep -E -- "$p" | grep -Eiv -- "$ALLOW" || true)
   if [ -n "$hits" ]; then
     echo "check-public: possible leak (pattern: $p)" >&2
     printf '%s\n' "$hits" | head -20 | sed 's/^/  /' >&2
@@ -60,12 +60,12 @@ if [ "$found" = 1 ]; then
 fi
 
 if [ "$MODE" != "--all" ] && [ -z "${SKIP_LLM:-}" ] && command -v ollama >/dev/null 2>&1; then
-  diff=$(git diff --cached --no-color | head -c 60000)
+  diff=$(git diff --cached --no-color | head -c 60000 || true)
   if [ -n "$diff" ]; then
     echo "check-public: asking local model for a second look..." >&2
     verdict=$(printf 'You review diffs for a PUBLIC git repository. Report any line that leaks personal or local information: real names, email addresses, private IP addresses, hostnames, Tailscale names, usernames, home directory paths, MAC addresses, secrets, keys or passwords. Placeholders such as 192.0.2.x, example.ts.net and the GitHub noreply address are fine. Answer "CLEAN" if nothing leaks, otherwise list the lines.\n\n%s\n' "$diff" \
       | timeout 300 ollama run "${LLM_MODEL:-qwen3-coder:30b-gpu}" 2>/dev/null || echo "(model unavailable)")
-    printf '%s\n' "$verdict" | sed 's/^/  model: /' >&2
+    printf '%s\n' "$verdict" | sed -e 's/\x1b\[[0-9;?]*[A-Za-z]//g' -e '/^[[:space:]]*$/d' -e 's/^/  model: /' >&2
   fi
 fi
 echo "check-public: ok" >&2
