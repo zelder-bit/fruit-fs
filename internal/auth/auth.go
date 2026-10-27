@@ -234,6 +234,11 @@ func (a *Auth) sessionExpiry(tok string) (time.Time, bool) {
 	if !a.now().Before(exp) {
 		return time.Time{}, false
 	}
+	// No guest session can last longer than MaxGuestLength, so a token that
+	// ends later is a 30-day session from before guest sessions existed.
+	if exp.After(a.now().Add(MaxGuestLength)) {
+		return time.Time{}, false
+	}
 	return exp, true
 }
 

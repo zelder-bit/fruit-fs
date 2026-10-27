@@ -289,3 +289,13 @@ func TestTailscaleUsersHaveNoExpiry(t *testing.T) {
 		t.Fatalf("tailscale identity JSON mentions expiry: %s", b)
 	}
 }
+
+func TestOldThirtyDaySessionsAreRefused(t *testing.T) {
+	a := newAuth(t, nil)
+	tok, _ := a.newSession(30 * 24 * time.Hour)
+	r := req("GET", lanAddr, nil)
+	r.AddCookie(&http.Cookie{Name: cookieName, Value: tok})
+	if _, ok := a.Identify(r); ok {
+		t.Fatal("pre-guest 30-day session accepted")
+	}
+}
