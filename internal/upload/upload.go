@@ -114,7 +114,7 @@ func (s *Service) create(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, err)
 		return
 	}
-	if err := s.root.WriteFile(partPath(id), nil, 0o600); err != nil {
+	if err := s.root.WriteFile(partPath(id), nil, 0o644); err != nil {
 		s.serverError(w, err)
 		return
 	}

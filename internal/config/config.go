@@ -24,7 +24,7 @@ func FromEnv() (*Config, error) {
 		DataDir:      env("FRUITFS_DATA", "/data"),
 		StateDir:     env("FRUITFS_STATE", "/state"),
 		Listen:       env("FRUITFS_LISTEN", ":8080"),
-		PasswordHash: strings.TrimSpace(os.Getenv("FRUITFS_PASSWORD_HASH")),
+		PasswordHash: unquote(os.Getenv("FRUITFS_PASSWORD_HASH")),
 		AllowedUsers: map[string]bool{},
 	}
 	for _, s := range split(os.Getenv("FRUITFS_TRUSTED_PROXIES")) {
@@ -58,6 +58,17 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// unquote drops one pair of surrounding quotes. The hash must be single-quoted
+// in a compose .env file (its $ signs would be expanded otherwise), but
+// `docker run --env-file` passes the quotes through literally.
+func unquote(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 && (s[0] == '\'' || s[0] == '"') && s[len(s)-1] == s[0] {
+		s = s[1 : len(s)-1]
+	}
+	return s
 }
 
 func split(s string) []string {

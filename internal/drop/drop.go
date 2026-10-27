@@ -525,7 +525,7 @@ func (h *Hub) saveToInbox(t *transfer) {
 		}
 		close(s.ready)
 		tmp := path.Join(files.StateDir, "uploads", "drop-"+t.id+"-"+strconv.Itoa(i)+".part")
-		f, err := h.root.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		f, err := h.root.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 		if err != nil {
 			s.pr.CloseWithError(err)
 			fail(i, err)

@@ -95,3 +95,17 @@ This commit is the "front end", what you actually see and click. It is written i
 - On phones the tabs move under the header, the buttons share one row, and previews fill the screen.
 
 **How it was checked:** a headless browser (a real Chrome with no window, driven by a script) signed in, opened folders, previewed a photo, uploaded a 20 MB file, deleted it and found it in Trash, switched to dark mode, sent a file between two tabs through Drop, and loaded the page at phone width to make sure nothing spilled off the side of the screen.
+
+### 5. Packing the lunchbox (the container)
+
+This commit packages fruit-fs so the home server can run it with one command.
+
+- **`Dockerfile`** is the recipe for the container image, in two stages. Stage one uses a big image that has Go installed and compiles the program. Stage two starts from *distroless*, a nearly empty base image with no shell and no extra programs, and copies in just the finished program. The result is about 10 MB, and an attacker who somehow got inside would find almost no tools to work with. The app runs as an ordinary user (number 65532), not as the all-powerful "root" user.
+- **Health check.** Every 30 seconds Docker runs `fruit-fs healthcheck`, which asks the server "are you OK?". If it stops answering, Docker marks it unhealthy and can restart it.
+- **`compose.yaml`** is a settings file for Docker Compose, the tool that starts the container. It runs the app with a read-only system disk, drops every special permission, and connects two folders from the server: `data` (your files) and `state` (the cookie key). It uses *host networking*, meaning the app sees the real address of whoever connects. That matters because the Tailscale check depends on knowing exactly where a request came from.
+- **`.env.example`** is a fill-in-the-blanks copy of the settings. You copy it to `.env`, which never gets committed. A gotcha found while testing: the password fingerprint contains `$` signs, and Compose thinks anything starting with `$` is a variable to fill in, which garbled the hash. Wrapping it in single quotes stops that, and the server now also strips stray quotes in case a different tool passes them through.
+- **GitHub Actions** (`.github/workflows/image.yml`) is a robot on GitHub's computers. Every time code is pushed, it runs all the tests. When a version tag like `v0.1.0` is pushed, it also builds the image and publishes it to GitHub's container registry, so the home server can simply download it.
+- Uploaded files are now saved readable by other users on the server, not just by the app, so they can be reached from the host computer too.
+- `README.md` explains how to set it up, every setting, and the security choices.
+
+Tested by running the real image with Compose: it reported healthy, accepted the password, saved an upload, and wrote files owned by the app's user.
