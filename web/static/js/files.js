@@ -1,6 +1,7 @@
 // The file browser: listing, navigation, selection, actions and previews.
 import { h, $, api, toast, fmtSize, fmtDate, fruitFor, icon, previewKind, joinPath, dlURL, openModal, closeModal, ask } from './ui.js';
 import { enqueue, filesFromDrop, setUploadDoneHandler } from './upload.js';
+import { openNote } from './notes.js';
 
 let cwd = '';          // current folder, '' = top
 let entries = [];      // what's shown right now
@@ -15,6 +16,7 @@ export function initFiles() {
   $('#pick-files').addEventListener('change', (e) => { uploadPicked(e.target.files); e.target.value = ''; });
   $('#pick-folder').addEventListener('change', (e) => { uploadPicked(e.target.files); e.target.value = ''; });
   $('#new-folder').addEventListener('click', newFolder);
+  $('#new-note').addEventListener('click', () => openNote(cwd, () => { if (searching) return; refresh(); loadStats(); }));
   $('#layout').addEventListener('click', () => { layout = layout === 'grid' ? 'list' : 'grid'; save('layout', layout); render(); });
 
   let timer;
