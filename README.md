@@ -2,7 +2,7 @@
 
 A small, fruity, self-hosted file browser and device-to-device drop. One Go binary with the web app built in, shipped as a ~10 MB container.
 
-- **Files:** browse, upload (resumable, folders too), download, zip whole folders, rename, move, search, preview photos, video, audio, PDFs and text, and a 30-day trash.
+- **Files:** browse, upload (resumable, folders too), download, zip whole folders, rename, move, search, preview photos, video, audio, PDFs and text, jot a sticky note straight into the open folder, and a 30-day trash.
 - **Drop:** open fruit-fs on two devices and send files or notes between them, AirDrop style. Files stream straight through and are never stored, unless the receiver picks "save to fruit-fs".
 - **Two ways in:** behind [Tailscale Serve](https://tailscale.com/kb/1312/serve) you're signed in automatically from your tailnet identity; on the local network you sign in with a password.
 
