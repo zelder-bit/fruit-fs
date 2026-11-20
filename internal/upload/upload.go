@@ -238,8 +238,15 @@ func (s *Service) finish(id string, m meta) error {
 	}
 	var err error
 	if m.Replace {
-		if fi, lerr := s.root.Lstat(m.Path); lerr == nil && fi.IsDir() {
+		fi, lerr := s.root.Lstat(m.Path)
+		if lerr == nil && fi.IsDir() {
 			return errExists
+		}
+		if lerr == nil && fi.Mode().IsRegular() {
+			// Keep the replaced file's permissions (an executable script stays executable, a private file private).
+			if err := s.root.Chmod(partPath(id), fi.Mode().Perm()); err != nil {
+				return err
+			}
 		}
 		err = s.root.Rename(partPath(id), m.Path)
 	} else {
