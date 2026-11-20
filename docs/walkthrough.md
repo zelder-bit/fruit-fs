@@ -6,7 +6,7 @@ This is a plain-English tour of what fruit-fs is, how it works, and what each co
 
 fruit-fs is a website that runs on a computer at home (a "home server") and lets you:
 
-1. **Browse files** stored on that server: open folders, upload, download, rename, move, delete, and preview photos, videos, music, PDFs and text.
+1. **Browse files** stored on that server: open folders, upload, download, rename, move, delete, preview photos, videos, music, PDFs and text, edit text files, and jot down sticky notes.
 2. **Drop files between devices**: open fruit-fs on your phone and your laptop at the same time, and they can see each other and send files or notes back and forth, like AirDrop but in a web browser.
 
 It is decorated with fruit: oranges and bananas are the "brand", and every kind of file gets its own fruit icon (photos are strawberries, videos are watermelon slices, music is grapes, and so on).
@@ -109,3 +109,34 @@ This commit packages fruit-fs so the home server can run it with one command.
 - `README.md` explains how to set it up, every setting, and the security choices.
 
 Tested by running the real image with Compose: it reported healthy, accepted the password, saved an upload, and wrote files owned by the app's user.
+
+### 6. Sticky notes
+
+A **Note** button in the Files toolbar opens a yellow sticky note. You type a title and some text, press **Save note** (or Ctrl+Enter, Cmd+Enter on a Mac), and it becomes a `.txt` file in the folder you have open.
+
+- **No new server code.** The note is saved through the same upload door that normal files use, just as one tiny upload.
+- **Drafts survive.** While you type, the note is kept in your browser's own storage, so closing it by accident doesn't lose anything. Opening the note again brings the draft back; **Discard** throws it away.
+- **No overwriting.** If a file with that name already exists, the note is saved as "Note (2).txt", "Note (3).txt" and so on.
+- **Safe names.** Slashes and invisible characters in the title are cleaned out, so a title can't sneak the file into a different folder.
+
+### 7. Editing text files
+
+Text files (notes, Markdown, code, settings files) now have an **Edit** button in the preview. It turns the text into a box you can type in; **Save** (or Ctrl/Cmd+Enter) writes it back, and **Cancel** goes back to just viewing.
+
+**Still no new server door.** Saving uses the same upload path again, but with a "replace" switch that swaps the new version in for the old one in a single step, so the file is never half-written.
+
+**Things that could lose your work, and what stops them:**
+
+- **Someone else changed the file.** When you open a file, the app remembers when it was last changed. Just before saving, it asks the server again. If the time is different (another device saved it in the meantime), your save is refused and your text stays on screen, so nobody's changes get silently wiped out. The check is accurate to the second, which is plenty for people but not for two programs saving in the same instant.
+- **Only part of the file was loaded.** The preview only loads the first 512 KB of a file. Saving that would cut off the rest, so files bigger than that can't be edited. The app checks the size the server actually sent rather than the (possibly old) size in the listing.
+- **Unreadable characters.** Files that aren't plain UTF-8 text (the most common way computers store letters) would come back scrambled, so they can't be edited either.
+- **Windows line endings.** Windows ends each line with two invisible characters, everything else with one. Text boxes in browsers quietly switch to one, so the app puts Windows endings back if the file had them.
+- **Closing by accident.** With unsaved changes, the ✕ button, Escape, the ‹ › arrows, Cancel and closing or reloading the tab all ask "Discard your unsaved changes?" first. While you're editing, the arrow keys move the cursor instead of flipping to the next file.
+- **A Drop arriving mid-edit.** Pop-ups share one window on the page, so an incoming Drop note or offer used to replace whatever was open. Now, if you have unsaved edits, it waits, shows a small message saying who sent it, and opens once you close the file. If the sender cancels meanwhile, it never pops up.
+- **Typing while it saves.** The text box is locked for the second or so a save takes, so what you see is exactly what was saved.
+
+**Permissions are kept.** Every file has permissions saying who may read it, change it or run it. Replacing a file used to give the new copy default permissions, so a script could stop being runnable, or a private file could become readable by other users on the server. The server now copies the old file's permissions onto the new one, and a Go test checks it.
+
+**How it was checked:** a reviewer agent read the change and found six real problems (the Windows line endings, typing during a save, the stale size, permissions, listeners left behind, and a stray error message), all fixed before merging. Then, in a real browser against a local server: saving; a refused save after the file was changed on disk; every "discard?" path; a Windows-style file keeping its line endings; no Edit button on a 700 KB file or a non-UTF-8 file; and a second, pretend device sending a note and offers while a file was being edited.
+
+**Known limits:** saving a file that is really a shortcut (symlink) replaces the shortcut with a normal file, and the note you're *writing* to another device in Drop can still be replaced by an incoming pop-up.
