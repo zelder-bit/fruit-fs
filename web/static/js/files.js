@@ -276,10 +276,12 @@ function preview(e) {
   let dirty = false;
   let saving = false;
 
+  // data-dirty on the dialog tells incoming Drop dialogs to wait instead of replacing the editor.
+  const setDirty = (v) => { dirty = v; $('#modal').toggleAttribute('data-dirty', v); };
   const okToLeave = () => !dirty || confirm('Discard your unsaved changes?');
   const showMeta = (f) => { meta.textContent = `${fmtSize(f.size)} · ${fmtDate(f.mtime)}`; };
   const stopEdit = () => {
-    area = null; dirty = false;
+    area = null; setDirty(false);
     editBtn.textContent = 'Edit';
     cancelBtn.hidden = true;
     body.replaceChildren(h('pre', {}, text));
@@ -287,7 +289,7 @@ function preview(e) {
   const startEdit = () => {
     area = h('textarea', { class: 'editor', spellcheck: 'false', 'aria-label': `Edit ${files[i].name}` });
     area.value = text;
-    area.addEventListener('input', () => { dirty = true; });
+    area.addEventListener('input', () => setDirty(true));
     area.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); saveEdit(); }
     });
@@ -336,7 +338,7 @@ function preview(e) {
 
   const show = async () => {
     const f = files[i];
-    area = null; dirty = false; lastMod = null;
+    area = null; setDirty(false); lastMod = null;
     editBtn.hidden = true;
     editBtn.textContent = 'Edit';
     cancelBtn.hidden = true;
@@ -396,6 +398,7 @@ function preview(e) {
     onClose: () => {
       removeEventListener('keydown', keys);
       removeEventListener('beforeunload', onUnload);
+      modal.removeAttribute('data-dirty');
       modal.removeEventListener('cancel', onEscape);
     },
   });

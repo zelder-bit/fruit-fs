@@ -42,10 +42,11 @@ function handle(m) {
       render();
       break;
     case 'text':
-      showNote(m.from, m.text);
+      whenFree(() => showNote(m.from, m.text), `${m.from.name} sent you a note`);
       break;
     case 'offer':
-      showOffer(m);
+      waiting.add(m.transfer);
+      whenFree(() => { if (waiting.delete(m.transfer)) showOffer(m); }, `${m.from.name} wants to share files`);
       break;
     case 'offered':
       break;
@@ -55,6 +56,7 @@ function handle(m) {
     case 'cancel': {
       const o = outgoing.get(m.transfer);
       if (o) { toast(`${o.peer.name}: ${m.error}`, 'bad'); outgoing.delete(m.transfer); setBusy(o.peer.id, null); }
+      waiting.delete(m.transfer);
       if ($('#modal').dataset.transfer === m.transfer) closeModal();
       break;
     }
@@ -67,6 +69,19 @@ function handle(m) {
       toast(m.error, 'bad');
       break;
   }
+}
+
+// Offers held back while a file is being edited; a cancelled one is never shown.
+const waiting = new Set();
+
+// whenFree runs show now, or once the file editor with unsaved changes closes, so
+// an incoming dialog never replaces someone's edits.
+function whenFree(show, note) {
+  const m = $('#modal');
+  if (!m.hasAttribute('data-dirty')) return show();
+  toast(`${note}; it will open when you close the file you're editing`);
+  // setTimeout: let the editor's own close handler finish first.
+  m.addEventListener('close', () => setTimeout(() => whenFree(show, note)), { once: true });
 }
 
 const deviceEmoji = { phone: '📱', tablet: '📲', laptop: '💻' };
@@ -181,7 +196,7 @@ function showOffer(m) {
       h('button', { class: 'btn ghost', onclick: () => answer(false) }, 'Decline'),
       h('button', { class: 'btn', onclick: () => answer(true, true) }, 'Save to fruit-fs'),
       h('button', { class: 'btn primary', onclick: () => answer(true) }, 'Download')));
-  const modal = openModal(box);
+  const modal = openModal(box, { onClose: () => delete $('#modal').dataset.transfer });
   modal.dataset.transfer = m.transfer;
 }
 
