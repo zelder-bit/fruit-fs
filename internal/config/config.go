@@ -15,8 +15,9 @@ type Config struct {
 	Listen         string         // address for the HTTP server
 	TrustedProxies []netip.Prefix // where Tailscale Serve connects from
 	AllowedUsers   map[string]bool
-	PasswordHash   string // argon2id hash for LAN logins; empty disables them
-	MaxUpload      int64  // bytes per file, 0 = unlimited
+	Admins         map[string]bool // tailnet logins allowed on the admin page; empty = every tailnet user
+	PasswordHash   string          // argon2id hash for LAN logins; empty disables them
+	MaxUpload      int64           // bytes per file, 0 = unlimited
 }
 
 func FromEnv() (*Config, error) {
@@ -26,6 +27,7 @@ func FromEnv() (*Config, error) {
 		Listen:       env("FRUITFS_LISTEN", ":8080"),
 		PasswordHash: unquote(os.Getenv("FRUITFS_PASSWORD_HASH")),
 		AllowedUsers: map[string]bool{},
+		Admins:       map[string]bool{},
 	}
 	for _, s := range split(os.Getenv("FRUITFS_TRUSTED_PROXIES")) {
 		p, err := parsePrefix(s)
@@ -36,6 +38,9 @@ func FromEnv() (*Config, error) {
 	}
 	for _, u := range split(os.Getenv("FRUITFS_ALLOWED_USERS")) {
 		c.AllowedUsers[strings.ToLower(u)] = true
+	}
+	for _, u := range split(os.Getenv("FRUITFS_ADMINS")) {
+		c.Admins[strings.ToLower(u)] = true
 	}
 	if s := os.Getenv("FRUITFS_MAX_UPLOAD"); s != "" {
 		n, err := parseSize(s)
