@@ -1,7 +1,7 @@
 // The file browser: listing, navigation, selection, actions and previews.
 import { h, $, api, toast, fmtSize, fmtDate, fruitFor, icon, previewKind, joinPath, dlURL, openModal, closeModal, ask } from './ui.js';
 import { enqueue, filesFromDrop, setUploadDoneHandler } from './upload.js';
-import { openNote } from './notes.js';
+import { openNote, writeFile } from './notes.js';
 
 let cwd = '';          // current folder, '' = top
 let entries = [];      // what's shown right now
@@ -259,6 +259,8 @@ function setupDropzone() {
 
 // --- preview ----------------------------------------------------------------------
 
+const EDIT_MAX = 524288; // the preview loads at most this much, so only whole files are editable
+
 function preview(e) {
   const files = entries.filter((x) => !x.dir);
   let i = files.findIndex((x) => x.path === e.path);
@@ -266,11 +268,80 @@ function preview(e) {
   const title = h('div', { class: 'name' });
   const meta = h('div', { class: 'muted small' });
   const dl = h('a', { class: 'btn primary small', download: '' }, 'Download');
+  const editBtn = h('button', { class: 'btn small', type: 'button', hidden: true }, 'Edit');
+  const cancelBtn = h('button', { class: 'btn ghost small', type: 'button', hidden: true }, 'Cancel');
+  let text = '';        // what the file holds right now, as far as we know
+  let lastMod = null;   // its Last-Modified when we read it
+  let area = null;      // the editor while editing
+  let dirty = false;
+  let saving = false;
+
+  const okToLeave = () => !dirty || confirm('Discard your unsaved changes?');
+  const showMeta = (f) => { meta.textContent = `${fmtSize(f.size)} · ${fmtDate(f.mtime)}`; };
+  const stopEdit = () => {
+    area = null; dirty = false;
+    editBtn.textContent = 'Edit';
+    cancelBtn.hidden = true;
+    body.replaceChildren(h('pre', {}, text));
+  };
+  const startEdit = () => {
+    area = h('textarea', { class: 'editor', spellcheck: 'false', 'aria-label': `Edit ${files[i].name}` });
+    area.value = text;
+    area.addEventListener('input', () => { dirty = true; });
+    area.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); saveEdit(); }
+    });
+    body.replaceChildren(area);
+    editBtn.textContent = 'Save';
+    cancelBtn.hidden = false;
+    area.focus();
+  };
+  const modified = async (f) => {
+    const res = await fetch(dlURL(f.path, true), { method: 'HEAD', cache: 'no-store' });
+    if (!res.ok) throw new Error("Couldn't check the file; is it still there?");
+    return res.headers.get('Last-Modified');
+  };
+  const saveEdit = async () => {
+    if (saving || !area) return;
+    const f = files[i];
+    saving = true;
+    editBtn.disabled = true;
+    area.readOnly = true; // what's on screen is what gets saved
+    try {
+      // shortcut: Last-Modified has 1-second precision, so a change made in the same second as our read slips past; add an ETag/If-Match check on the server if that matters.
+      if (await modified(f) !== lastMod) throw new Error('This file changed since you opened it. Copy your edits, then close and reopen it.');
+      const value = area.value;
+      // Textareas turn CRLF into LF; put Windows line endings back if the file had them.
+      const blob = new Blob([text.includes('\r\n') ? value.replace(/\n/g, '\r\n') : value], { type: 'text/plain' });
+      await writeFile(f.path, blob, true);
+      text = value;
+      f.size = blob.size;
+      f.mtime = new Date().toISOString();
+      showMeta(f);
+      lastMod = await modified(f).catch(() => null);
+      editBtn.hidden = !lastMod; // can't check for conflicts without it
+      stopEdit();
+      toast(`Saved "${f.name}"`, 'good');
+      if (!searching) refresh();
+    } catch (err) {
+      toast(err.message, 'bad');
+    } finally {
+      saving = false;
+      editBtn.disabled = false;
+      if (area) area.readOnly = false;
+    }
+  };
+  editBtn.addEventListener('click', () => (area ? saveEdit() : startEdit()));
+  cancelBtn.addEventListener('click', () => { if (okToLeave()) stopEdit(); });
 
   const show = async () => {
     const f = files[i];
+    area = null; dirty = false; lastMod = null;
+    editBtn.hidden = true;
+    editBtn.textContent = 'Edit';
+    cancelBtn.hidden = true;
     title.textContent = f.name;
-    meta.textContent = `${fmtSize(f.size)} · ${fmtDate(f.mtime)}`;
+    showMeta(f);
     dl.href = dlURL(f.path);
     const kind = previewKind(f.name);
     const src = dlURL(f.path, true);
@@ -281,27 +352,53 @@ function preview(e) {
     else if (kind === 'text') {
       body.replaceChildren(h('p', { class: 'muted' }, 'Squeezing…'));
       try {
-        const res = await fetch(src, { headers: { Range: 'bytes=0-524287' } });
-        const text = await res.text();
-        body.replaceChildren(h('pre', {}, text + (f.size > 524288 ? '\n\n… (only the first 512 KB is shown)' : '')));
-      } catch { body.replaceChildren(h('p', {}, "Couldn't read it.")); }
+        const res = await fetch(src, { headers: { Range: `bytes=0-${EDIT_MAX - 1}` }, cache: 'no-store' });
+        const buf = await res.arrayBuffer();
+        if (files[i] !== f) return; // stepped to another file meanwhile
+        let utf8 = true;
+        try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buf); }
+        catch { utf8 = false; text = new TextDecoder().decode(buf); }
+        lastMod = res.headers.get('Last-Modified');
+        // Only offer editing when we hold the whole file as valid UTF-8, so saving can't truncate or mangle it.
+        // Check the response itself: the listing's size may be stale.
+        const total = res.status === 206 ? Number(res.headers.get('Content-Range')?.split('/')[1]) : buf.byteLength;
+        editBtn.hidden = !(res.ok && utf8 && total === buf.byteLength && lastMod);
+        body.replaceChildren(h('pre', {}, text + (f.size > EDIT_MAX ? '\n\n… (only the first 512 KB is shown)' : '')));
+      } catch { if (files[i] === f) body.replaceChildren(h('p', {}, "Couldn't read it.")); }
     } else {
       body.replaceChildren(h('div', { class: 'no-preview' }, icon(fruitFor(f), 'fruit big'), h('p', {}, 'No preview for this one — download it instead.')));
     }
   };
-  const step = (d) => { if (files.length > 1) { i = (i + d + files.length) % files.length; show(); } };
-  const keys = (ev) => { if (ev.key === 'ArrowRight') step(1); if (ev.key === 'ArrowLeft') step(-1); };
+  const step = (d) => { if (files.length > 1 && !saving && okToLeave()) { i = (i + d + files.length) % files.length; show(); } };
+  const keys = (ev) => {
+    if (area) return; // arrows move the cursor while editing
+    if (ev.key === 'ArrowRight') step(1);
+    if (ev.key === 'ArrowLeft') step(-1);
+  };
+  const onEscape = (ev) => { if (saving || !okToLeave()) ev.preventDefault(); };
+  const onUnload = (ev) => { if (dirty) ev.preventDefault(); };
 
   const view = h('div', { class: 'preview' },
     h('div', { class: 'preview-head' },
       h('div', { class: 'preview-title' }, title, meta),
+      cancelBtn,
+      editBtn,
       dl,
-      h('button', { class: 'icon-btn', 'aria-label': 'Close', onclick: closeModal }, '✕')),
+      h('button', { class: 'icon-btn', 'aria-label': 'Close', onclick: () => { if (!saving && okToLeave()) closeModal(); } }, '✕')),
     h('div', { class: 'preview-stage' },
       files.length > 1 ? h('button', { class: 'nav prev', 'aria-label': 'Previous', onclick: () => step(-1) }, '‹') : null,
       body,
       files.length > 1 ? h('button', { class: 'nav next', 'aria-label': 'Next', onclick: () => step(1) }, '›') : null));
   addEventListener('keydown', keys);
-  openModal(view, { wide: true, onClose: () => removeEventListener('keydown', keys) });
+  addEventListener('beforeunload', onUnload);
+  const modal = openModal(view, {
+    wide: true,
+    onClose: () => {
+      removeEventListener('keydown', keys);
+      removeEventListener('beforeunload', onUnload);
+      modal.removeEventListener('cancel', onEscape);
+    },
+  });
+  modal.addEventListener('cancel', onEscape);
   show();
 }

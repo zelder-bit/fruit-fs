@@ -156,3 +156,23 @@ func TestConcurrentFinishDoesNotOverwrite(t *testing.T) {
 		t.Fatalf("file = %q", got)
 	}
 }
+
+func TestReplaceKeepsPermissions(t *testing.T) {
+	data, h := setup(t, "alice")
+	target := filepath.Join(data, "run.sh")
+	if err := os.WriteFile(target, []byte("old"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(map[string]any{"path": "run.sh", "size": 3, "replace": true})
+	w := call(h, "POST", "/api/uploads", bytes.NewReader(b), nil)
+	var out struct{ ID string }
+	json.Unmarshal(w.Body.Bytes(), &out)
+	if w = call(h, "PATCH", "/api/uploads/"+out.ID, bytes.NewReader([]byte("new")), map[string]string{"Upload-Offset": "0"}); w.Code != 200 {
+		t.Fatal("patch", w.Code, w.Body)
+	}
+	got, _ := os.ReadFile(target)
+	fi, _ := os.Stat(target)
+	if string(got) != "new" || fi.Mode().Perm() != 0o750 {
+		t.Fatalf("got %q mode %v, want \"new\" mode 0750", got, fi.Mode().Perm())
+	}
+}

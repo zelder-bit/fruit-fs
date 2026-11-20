@@ -30,9 +30,9 @@ function numbered(name, n) {
   return `${name.slice(0, dot)} (${n})${name.slice(dot)}`;
 }
 
-// writeFile sends one small blob through the upload API.
-async function writeFile(path, blob) {
-  const up = await api('POST', '/api/uploads', { path, size: blob.size, replace: false });
+// writeFile sends one small blob through the upload API; replace overwrites an existing file.
+export async function writeFile(path, blob, replace = false) {
+  const up = await api('POST', '/api/uploads', { path, size: blob.size, replace });
   if (up.done) return;
   const res = await fetch(`/api/uploads/${up.id}`, {
     method: 'PATCH',

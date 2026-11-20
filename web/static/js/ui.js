@@ -117,6 +117,10 @@ export function dlURL(path, inline = false) {
 
 export function openModal(content, { wide = false, onClose } = {}) {
   const m = $('#modal');
+  // Content being replaced still gets its cleanup.
+  const prev = m.onclose;
+  m.onclose = null;
+  prev?.();
   m.replaceChildren(content);
   m.className = wide ? 'wide' : '';
   m.onclose = () => { m.replaceChildren(); onClose?.(); };
